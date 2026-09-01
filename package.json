@@ -18,7 +18,8 @@
     "harmony-studio.mjs",
     "harmony-device.mjs",
     "harmony-config.mjs",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "scripts/self-test.mjs"
   ],
   "license": "MIT",
   "publishConfig": { "access": "public" },
@@ -39,6 +40,6 @@
   },
   "scripts": {
     "check": "node --check index.js && node --check client.js && node --check typert.host.js && node --check harmony-studio.mjs && node --check harmony-device.mjs && node --check harmony-config.mjs && node --check scripts/self-test.mjs",
-    "test": "node scripts/self-test.mjs"
+    "test": "node --test scripts/self-test.mjs --test-isolation=none"
   }
 }
