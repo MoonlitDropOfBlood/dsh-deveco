@@ -3,16 +3,20 @@
  *
  * Rendered by the DSH web shell via `window.__ModuleLoader__.load`. Registers:
  *   1. A `HarmonyOS Suite` single-instance tab in better-sidebar (HiLog
- *      streaming + ArkUI Inspector + project browser + settings shortcut).
+ *      streaming + ArkUI Inspector + project browser).
  *   2. An `ArkTS / TypeScript` file viewer for `.ets` files (preferred over
  *      the built-in text editor via higher priority).
- *   3. A `HarmonyOS Suite` page in Settings (settings.section) for managing
- *      DevEco Studio / Command Line Tools paths with three-platform
- *      auto-discovery and the studio↔clt mutual exclusion rule.
+ *   3. A plugin-configuration card under Settings → 插件 → 配置
+ *      (`settings.plugin.item`, keyed `harmony-deveco`) for managing DevEco
+ *      Studio / Command Line Tools paths with three-platform auto-discovery
+ *      and the studio↔clt mutual exclusion rule. No extra sidebar/settings
+ *      nav entry is added.
  *
  * Host communication goes through the `harmonyDevEco` Remote namespace
- * (`ctx.get('remote.harmonyDevEco').{getConfig, setStudioPath, ..., uiTap, ...}`),
- * published by the Host half in `index.js`.
+ * (`ctx.get('remote.harmonyDevEco').{getConfig, getSettingsNamespace, rescan,
+ * deviceList, hilog*, ui*, ...}`), published by the Host half in `index.js`.
+ * Path writes use the official settings transport (`ctx.settingsScope`), not a
+ * custom Remote method.
  *
  * IMPORTANT: every React component below is defined once at bundle scope so
  * its function identity is stable across parent re-renders. Inline component

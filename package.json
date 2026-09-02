@@ -42,11 +42,19 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-invariants": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7"
   },
   "dependencies": {
     "zod": "^4.4.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "@deepseek-ai/cordis": "4.0.1",
+      "@deepseek-ai/dsh-invariants": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.7"
+    }
   },
   "scripts": {
     "check": "node --check index.js && node --check client.js && node --check typert.host.js && node --check harmony-studio.mjs && node --check harmony-device.mjs && node --check harmony-config.mjs && node --check scripts/self-test.mjs",
