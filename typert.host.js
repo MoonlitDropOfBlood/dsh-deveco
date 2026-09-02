@@ -227,18 +227,6 @@ const projectsSchema = z
 
 const _harmonyDevEco_getConfig_parameter_0$schema = z.object({}).readonly();
 
-const _harmonyDevEco_setStudioPath_parameter_0$schema = z
-  .object({
-    path: z.string().readonly(),
-  })
-  .readonly();
-
-const _harmonyDevEco_setCltPath_parameter_0$schema = z
-  .object({
-    path: z.string().readonly(),
-  })
-  .readonly();
-
 const _harmonyDevEco_rescan_parameter_0$schema = z.object({}).readonly();
 
 const _harmonyDevEco_deviceList_parameter_0$schema = z.object({}).readonly();
@@ -334,10 +322,9 @@ const getConfigValueSchema = z
   })
   .readonly();
 
-const setPathValueSchema = z
+const getSettingsNamespaceValueSchema = z
   .object({
-    config: configSchema,
-    resolved: resolvedSchema,
+    namespace: z.string().readonly(),
   })
   .readonly();
 
@@ -405,13 +392,9 @@ export const TYPERT = {
       "Read the current toolchain config, the resolved CLI source, and the latest discovery snapshot.",
       "/**\n * Read the current toolchain config, the resolved CLI source, and the latest discovery snapshot.\n */"),
 
-    iv("setStudioPath", _harmonyDevEco_setStudioPath_parameter_0$schema, setPathValueSchema,
-      "Set the DevEco Studio path (clears the CLT path because the two are mutually exclusive).",
-      "/**\n * Set the DevEco Studio path (clears the CLT path because the two are mutually exclusive).\n * @param request - `{ path }`.\n * @returns the updated config + resolved source.\n */"),
-
-    iv("setCltPath", _harmonyDevEco_setCltPath_parameter_0$schema, setPathValueSchema,
-      "Set the Command Line Tools path (clears the Studio path because the two are mutually exclusive).",
-      "/**\n * Set the Command Line Tools path (clears the Studio path because the two are mutually exclusive).\n * @param request - `{ path }`.\n * @returns the updated config + resolved source.\n */"),
+    iv("getSettingsNamespace", _harmonyDevEco_getConfig_parameter_0$schema, getSettingsNamespaceValueSchema,
+      "Return the settings namespace key the client card writes through (settings.plugin.item).",
+      "/**\n * Return the settings namespace key the client card writes through.\n * @returns the namespace string the client binds via `ctx.settingsScope.bind({ namespace })`.\n */"),
 
     iv("rescan", _harmonyDevEco_rescan_parameter_0$schema, rescanValueSchema,
       "Re-run toolchain auto-discovery and persist the result to disk.",
@@ -487,19 +470,11 @@ export const TYPERT = {
           },
           {
             kind: "method",
-            name: "setStudioPath",
-            signature: "@Remote('setStudioPath') async setStudioPath(request: HarmonyDevEcoSetStudioPathRequest): Promise<HarmonyDevEcoSetStudioPathResult>",
-            summary: "Set the DevEco Studio path (clears the CLT path because the two are mutually exclusive).",
+            name: "getSettingsNamespace",
+            signature: "@Remote('getSettingsNamespace') async getSettingsNamespace(): Promise<HarmonyDevEcoGetSettingsNamespaceResult>",
+            summary: "Return the settings namespace key the client card writes through.",
             jsDoc:
-              "/**\n * Set the DevEco Studio path; clears cltPath per the mutex rule.\n * @param request - `{ path }`.\n * @returns the updated config + resolved source.\n */",
-          },
-          {
-            kind: "method",
-            name: "setCltPath",
-            signature: "@Remote('setCltPath') async setCltPath(request: HarmonyDevEcoSetCltPathRequest): Promise<HarmonyDevEcoSetCltPathResult>",
-            summary: "Set the Command Line Tools path (clears the Studio path because the two are mutually exclusive).",
-            jsDoc:
-              "/**\n * Set the Command Line Tools path; clears studioPath per the mutex rule.\n * @param request - `{ path }`.\n * @returns the updated config + resolved source.\n */",
+              "/**\n * Return the settings namespace key the client card writes through.\n * @returns `{ namespace }` for `ctx.settingsScope.bind({ namespace })`.\n */",
           },
           {
             kind: "method",
@@ -617,22 +592,9 @@ export const TYPERT = {
               "export type HarmonyDevEcoGetConfigResult = { ok: true; value: { config: { studioPath: string; cltPath: string; updatedAt: number }; resolved: { source: 'devecocli'|'clt'|'studio'|'none'; exec?: string; path?: string; version?: readonly number[] | string; minVersionOk: boolean; message: string }; discovery: HarmonyDevEcoDiscovery | null } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
-            name: "HarmonyDevEcoSetStudioPathRequest",
-            declaration: "export interface HarmonyDevEcoSetStudioPathRequest {\n    readonly path: string;\n}",
-          },
-          {
-            name: "HarmonyDevEcoSetStudioPathResult",
+            name: "HarmonyDevEcoGetSettingsNamespaceResult",
             declaration:
-              "export type HarmonyDevEcoSetStudioPathResult = { ok: true; value: { config: { studioPath: string; cltPath: string; updatedAt: number }; resolved: HarmonyDevEcoResolved } } | { ok: false; error: { code: string; message?: string } };",
-          },
-          {
-            name: "HarmonyDevEcoSetCltPathRequest",
-            declaration: "export interface HarmonyDevEcoSetCltPathRequest {\n    readonly path: string;\n}",
-          },
-          {
-            name: "HarmonyDevEcoSetCltPathResult",
-            declaration:
-              "export type HarmonyDevEcoSetCltPathResult = { ok: true; value: { config: { studioPath: string; cltPath: string; updatedAt: number }; resolved: HarmonyDevEcoResolved } } | { ok: false; error: { code: string; message?: string } };",
+              "export type HarmonyDevEcoGetSettingsNamespaceResult = { ok: true; value: { namespace: string } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
             name: "HarmonyDevEcoRescanRequest",

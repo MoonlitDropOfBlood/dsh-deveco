@@ -34,11 +34,15 @@
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
       "platform": "web",
-      "external": ["dsh-better-sidebar"]
+      "external": [
+        "dsh-better-sidebar",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7"
   },
   "dependencies": {

@@ -18,7 +18,9 @@
  */
 
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
+import { settingsNamespace, installSettingsSection } from "@deepseek-ai/dsh-settings";
 import { Service } from "@deepseek-ai/cordis";
+import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
@@ -26,9 +28,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import {
-  loadConfig,
-  setStudioPath as cfgSetStudio,
-  setCltPath as cfgSetClt,
   ensureDiscovery,
 } from "./harmony-config.mjs";
 import { resolveCli } from "./harmony-studio.mjs";
@@ -207,9 +206,22 @@ function buildHilogFollowArgs(opts = {}) {
   return args;
 }
 
+/**
+ * Settings-namespace key for the HarmonyOS Suite toolchain picker. The value
+ * is what the user sees in the settings page's Plugin Configuration tab. The
+ * Host half registers a section under this name; the client half writes back
+ * through `ctx.settingsScope.bind({ namespace }).set(field, value)`.
+ */
+const HARMONY_DEFAULTS = Object.freeze({
+  namespace: settingsNamespace("harmony-deveco"),
+});
+
 export class HarmonyDevEcoService extends TypertRemoteService {
   /**
    * No hard service dependencies — the entire toolchain layer is local modules.
+   * The settings provider (`@deepseek-ai/dsh-settings-file`) is a composition
+   * dependency pulled in by the web profile, so the namespace is available
+   * before this plugin's `[Service.init]()` runs.
    */
   static inject = [];
 
@@ -225,15 +237,14 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     /** streamId → { child, buffer: Array<object>, closed: boolean, error?: string } */
     this._streams = new Map();
     this._discovery = null;
-    this._config = null;
+    /** Returns the currently authoritative config (defaults before installSettingsSection wires it up). */
+    this._getConfigSource = () => ({ studioPath: "", cltPath: "" });
     this._resolved = null;
   }
 
   /** Cordis class-plugin initializer: runs after construction, before publish. */
   async [Service.init]() {
     markRemoteMethod(this, "getConfig", "getConfig");
-    markRemoteMethod(this, "setStudioPath", "setStudioPath");
-    markRemoteMethod(this, "setCltPath", "setCltPath");
     markRemoteMethod(this, "rescan", "rescan");
     markRemoteMethod(this, "deviceList", "deviceList");
     markRemoteMethod(this, "deviceInfo", "deviceInfo");
@@ -247,12 +258,15 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     markRemoteMethod(this, "uiSwipe", "uiSwipe");
     markRemoteMethod(this, "uiText", "uiText");
     markRemoteMethod(this, "listProjects", "listProjects");
+    markRemoteMethod(this, "getSettingsNamespace", "getSettingsNamespace");
 
-    // Ensure the data directory exists, then warm the config + discovery cache.
+    // Ensure the data directory exists, then warm the discovery cache. The
+    // toolchain path configuration itself now lives in the DSH settings
+    // service (registered below) — no separate on-disk config file needed.
     try {
       await mkdir(this._configDir, { recursive: true });
     } catch (e) {
-      // Non-fatal: loadConfig / saveConfig will surface the IO error to callers.
+      // Non-fatal: ensureDiscovery will surface the IO error to its callers.
     }
 
     try {
@@ -260,11 +274,25 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     } catch (_) {
       this._discovery = null;
     }
-    this._config = await loadConfig(this._configDir);
-    this._resolved = resolveCli({
-      studioPath: this._config.studioPath,
-      cltPath: this._config.cltPath,
+
+    // Register the HarmonyOS Suite settings namespace with the Host settings
+    // service. The schema is the user-facing toolchain picker: both fields
+    // default to "" so an empty section still resolves to a usable object. The
+    // Service subscribes to the resolved source through setSource, so any
+    // settings.document-updated event from the client (e.g. when the user
+    // saves in the settings page) immediately re-runs resolveCli.
+    const HarmonyConfigSchema = z.object({
+      studioPath: z.string().default(""),
+      cltPath: z.string().default(""),
     });
+    const defaultConfig = { studioPath: "", cltPath: "" };
+    let source = () => defaultConfig;
+    this._getConfigSource = () => source();
+    installSettingsSection(this.ctx, HARMONY_DEFAULTS.namespace, HarmonyConfigSchema, defaultConfig, {
+      setSource: (current) => { source = current; },
+      onChange: () => { this._reloadResolved(); },
+    });
+    this._reloadResolved();
 
     // Best-effort cleanup of any leftover live-streams when the plugin fiber
     // is disposed (DSH shutdown, plugin reload). Each child process is killed
@@ -279,11 +307,16 @@ export class HarmonyDevEcoService extends TypertRemoteService {
 
   // ---- internal helpers ----------------------------------------------------
 
-  /** Refresh `_resolved` from the in-memory `_config`. */
+  /**
+   * Refresh `_resolved` from the live settings source. Re-runs on every
+   * settings change because the installSettingsSection onChange hook
+   * dispatches into this method.
+   */
   _reloadResolved() {
+    const c = this._getConfigSource() || {};
     this._resolved = resolveCli({
-      studioPath: this._config.studioPath,
-      cltPath: this._config.cltPath,
+      studioPath: typeof c.studioPath === "string" ? c.studioPath : "",
+      cltPath: typeof c.cltPath === "string" ? c.cltPath : "",
     });
     return this._resolved;
   }
@@ -316,31 +349,21 @@ export class HarmonyDevEcoService extends TypertRemoteService {
   // ---- config / discovery --------------------------------------------------
 
   async getConfig() {
+    const c = this._getConfigSource() || { studioPath: "", cltPath: "" };
     return ok({
-      config: toConfigWire(this._config),
+      config: toConfigWire({ ...c, updatedAt: Date.now() }),
       resolved: toResolvedWire(this._resolved),
       discovery: this._discovery ? toDiscoveryWire(this._discovery) : null,
     });
   }
 
-  async setStudioPath(request) {
-    const path = (request && typeof request.path === "string") ? request.path : "";
-    this._config = await cfgSetStudio(this._configDir, path);
-    this._reloadResolved();
-    return ok({
-      config: toConfigWire(this._config),
-      resolved: toResolvedWire(this._resolved),
-    });
-  }
-
-  async setCltPath(request) {
-    const path = (request && typeof request.path === "string") ? request.path : "";
-    this._config = await cfgSetClt(this._configDir, path);
-    this._reloadResolved();
-    return ok({
-      config: toConfigWire(this._config),
-      resolved: toResolvedWire(this._resolved),
-    });
+  /**
+   * Return the settings namespace string the client card writes through. The
+   * client uses this to bind `ctx.settingsScope.bind({ namespace })` and to
+   * call `.set('studioPath' | 'cltPath', value)`.
+   */
+  async getSettingsNamespace() {
+    return ok({ namespace: HARMONY_DEFAULTS.namespace });
   }
 
   async rescan() {

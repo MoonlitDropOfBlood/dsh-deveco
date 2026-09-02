@@ -148,8 +148,7 @@ window.__ModuleLoader__.load({
       package: "dsh-deveco",
       descriptors: [
         method("getConfig", []),
-        method("setStudioPath", ["request"]),
-        method("setCltPath", ["request"]),
+        method("getSettingsNamespace", []),
         method("rescan", []),
         method("deviceList", []),
         method("deviceInfo", ["request"]),
@@ -698,10 +697,17 @@ window.__ModuleLoader__.load({
       );
     }
 
-    // ---- settings page ----------------------------------------------------
-    function HarmonySettingsPage(props) {
-      // `remote` is bound by the apply() closure (see top of apply).
-      const [config, setConfig] = React.useState(null);
+    // ---- plugin-config card (settings.plugin.item) -------------------------
+    //
+    // The user-facing configuration surface for this plugin: a card inside the
+    // DSH Settings → Plugins → Configuration tab. It edits the settings
+    // namespace `harmony-deveco` directly through `ctx.settingsScope` (the
+    // official client-side settings transport), instead of a bespoke settings
+    // page. The Host half registered the namespace and re-resolves the
+    // toolchain on every `settings/document-updated`, so saving a path here
+    // takes effect immediately.
+    function HarmonySettingsCard(props) {
+      // Bound scope is created once per card mount by the apply() closure.
       const [resolved, setResolved] = React.useState(null);
       const [discovery, setDiscovery] = React.useState(null);
       const [studioPath, setStudioPath] = React.useState("");
@@ -709,45 +715,51 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = React.useState(false);
       const [errorMsg, setErrorMsg] = React.useState("");
 
-      const refresh = React.useCallback(async () => {
+      // Read the current values out of the bound scope (defined in apply()).
+      const sync = React.useCallback(() => {
+        if (!settingsScope) return;
+        const snap = settingsScope.get();
+        const value = (snap && snap.value) || {};
+        setStudioPath(typeof value.studioPath === "string" ? value.studioPath : "");
+        setCltPath(typeof value.cltPath === "string" ? value.cltPath : "");
+      }, []);
+
+      React.useEffect(() => {
+        if (!settingsScope) return;
+        const off = settingsScope.subscribe(() => sync());
+        sync();
+        return off;
+      }, [sync]);
+
+      const loadToolchainState = React.useCallback(async () => {
         if (!remote) return;
         try {
           const r = await remote.getConfig();
           const out = unwrap(r);
           if (out.ok && out.value) {
-            setConfig(out.value.config);
-            setResolved(out.value.resolved);
-            setDiscovery(out.value.discovery);
-            setStudioPath(out.value.config && out.value.config.studioPath ? out.value.config.studioPath : "");
-            setCltPath(out.value.config && out.value.config.cltPath ? out.value.config.cltPath : "");
+            setResolved(out.value.resolved || null);
+            setDiscovery(out.value.discovery || null);
           }
         } catch (e) { /* */ }
-      }, [remote]);
+      }, []);
 
-      React.useEffect(() => { refresh(); }, [refresh]);
+      React.useEffect(() => { loadToolchainState(); }, [loadToolchainState]);
 
-      const applyStudio = async () => {
-        if (!remote) return;
+      const applyPath = async (field) => {
+        if (!settingsScope) return;
         setBusy(true); setErrorMsg("");
         try {
-          const r = await remote.setStudioPath({ path: studioPath.trim() });
-          const out = unwrap(r);
-          if (!out.ok) { setErrorMsg((out.error && (out.error.message || out.error.code)) || "设置失败"); return; }
-          await refresh();
-        } catch (e) { setErrorMsg(e instanceof Error ? e.message : String(e)); }
-        finally { setBusy(false); }
-      };
-
-      const applyClt = async () => {
-        if (!remote) return;
-        setBusy(true); setErrorMsg("");
-        try {
-          const r = await remote.setCltPath({ path: cltPath.trim() });
-          const out = unwrap(r);
-          if (!out.ok) { setErrorMsg((out.error && (out.error.message || out.error.code)) || "设置失败"); return; }
-          await refresh();
-        } catch (e) { setErrorMsg(e instanceof Error ? e.message : String(e)); }
-        finally { setBusy(false); }
+          const value = field === "cltPath" ? cltPath.trim() : studioPath.trim();
+          // Mutual exclusion: writing one field clears the other (user decision).
+          await settingsScope.set(field, value);
+          if (field === "cltPath") await settingsScope.unset("studioPath");
+          else await settingsScope.unset("cltPath");
+          await loadToolchainState();
+        } catch (e) {
+          setErrorMsg(e instanceof Error ? e.message : String(e));
+        } finally {
+          setBusy(false);
+        }
       };
 
       const rescan = async () => {
@@ -757,17 +769,13 @@ window.__ModuleLoader__.load({
           const r = await remote.rescan();
           const out = unwrap(r);
           if (!out.ok) { setErrorMsg((out.error && (out.error.message || out.error.code)) || "扫描失败"); return; }
-          await refresh();
+          setDiscovery(out.value.discovery || null);
         } catch (e) { setErrorMsg(e instanceof Error ? e.message : String(e)); }
         finally { setBusy(false); }
       };
 
-      if (!remote) {
-        return React.createElement("div", { className: "harm-empty" }, "Remote 命名空间尚未挂载。");
-      }
-
-      const sourceLabel = resolved ? resolved.source : "loading";
-      const sourceMsg = resolved ? resolved.message : "加载中…";
+      const sourceLabel = resolved ? resolved.source : "加载中…";
+      const sourceMsg = resolved ? (resolved.message || "") : "从设置服务读取工具链状态…";
       const badgeCls = resolved && resolved.source === "devecocli" ? "harm-badge-ok"
         : resolved && resolved.source === "clt" && resolved.minVersionOk ? "harm-badge-ok"
         : resolved && resolved.source === "studio" ? "harm-badge-warn"
@@ -780,14 +788,14 @@ window.__ModuleLoader__.load({
         "div", { className: "harm-page" },
         React.createElement(
           "div", { className: "harm-head" },
-          React.createElement("h3", { className: "harm-head-title" }, "HarmonyOS 插件配置"),
+          React.createElement("h3", { className: "harm-head-title" }, "HarmonyOS 开发套件配置"),
           React.createElement("span", { className: "harm-badge " + badgeCls }, sourceLabel),
           React.createElement("button", { className: "harm-btn", disabled: busy, onClick: rescan }, "重新扫描"),
         ),
         React.createElement("div", { className: "harm-status" }, sourceMsg),
         React.createElement(
           "div", { className: "harm-banner harm-banner-warn" },
-          "Studio 路径与 Command Line Tools 路径互斥。同时配置时优先 CLT。PATH 中存在 devecocli 时优先使用，忽略设置路径。",
+          "DevEco Studio 路径与 Command Line Tools 路径互斥：配置一个会清空另一个；同时配置时优先 Command Line Tools（最低 26.0.0）。PATH 中存在 devecocli 时优先使用并忽略以下路径。",
         ),
         errorMsg ? React.createElement("div", { className: "harm-error" }, errorMsg) : null,
 
@@ -801,7 +809,7 @@ window.__ModuleLoader__.load({
               onChange: (e) => setStudioPath(e.target.value),
               placeholder: "C:\\Program Files\\Huawei\\DevEco Studio",
             }),
-            React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: applyStudio }, "应用"),
+            React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: () => applyPath("studioPath") }, "应用"),
           ),
           studios.length > 0
             ? React.createElement(
@@ -827,7 +835,7 @@ window.__ModuleLoader__.load({
               onChange: (e) => setCltPath(e.target.value),
               placeholder: "C:\\Program Files\\Huawei\\Command Line Tools\\26.0.0",
             }),
-            React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: applyClt }, "应用"),
+            React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: () => applyPath("cltPath") }, "应用"),
           ),
           clts.length > 0
             ? React.createElement(
@@ -871,6 +879,14 @@ window.__ModuleLoader__.load({
       // still talk to the Host through the same mounted namespace.
       const remote = ctx.get("remote.harmonyDevEco");
 
+      // Bind the settings namespace scope. The namespace is registered by the
+      // Host half under `harmony-deveco`; binding it on this fiber lets the
+      // settings card read current values and write back through the official
+      // settings transport (no custom write Remote needed).
+      const settingsScope = ctx.settingsScope ? ctx.settingsScope.bind({
+        namespace: "harmony-deveco",
+      }) : null;
+
       const styleTag = document.createElement("style");
       styleTag.textContent = CSS;
       document.head.appendChild(styleTag);
@@ -902,14 +918,20 @@ window.__ModuleLoader__.load({
         ctx.effect(() => disposeViewer);
       }
 
-      ctx.slots.inject("settings.section", () => ctx.slots.register(
-        { name: "settings.section", id: "harmony-deveco", order: 40, label: () => "HarmonyOS Suite" },
-        HarmonySettingsPage,
-      ));
+      // Plugin Configuration card: appears inside Settings → 插件 → 配置
+      // (the ui-settings-plugins "configurable" tab), keyed by the settings
+      // namespace it edits. No extra sidebar/settings nav entry is added.
+      ctx.slots.inject("settings.plugin.item", function* () {
+        yield ctx.slots.register({
+          name: "settings.plugin.item",
+          key: "harmony-deveco",
+          label: () => "HarmonyOS Suite",
+        }, HarmonySettingsCard);
+      });
     }
 
     exports.apply = apply;
-    exports.inject = ["slots", "remote", "betterSidebar"];
+    exports.inject = ["slots", "remote", "settingsScope", "betterSidebar"];
     return module.exports;
   },
 });
