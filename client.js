@@ -309,7 +309,9 @@ window.__ModuleLoader__.load({
 
     // ---- main tab ---------------------------------------------------------
     function HarmonySuiteTab(props) {
-      const remote = (props.ctx && props.ctx.get) ? props.ctx.get("remote.harmonyDevEco") : null;
+      // `remote` is bound by the apply() closure above — the props.ctx is the
+      // host's own (better-sidebar's), not our bundle's, so reading the
+      // namespace through props.ctx would always miss.
       const [subTab, setSubTab] = React.useState("hilog");
       const [config, setConfig] = React.useState(null);
       const [resolved, setResolved] = React.useState(null);
@@ -698,7 +700,7 @@ window.__ModuleLoader__.load({
 
     // ---- settings page ----------------------------------------------------
     function HarmonySettingsPage(props) {
-      const remote = (props.ctx && props.ctx.get) ? props.ctx.get("remote.harmonyDevEco") : null;
+      // `remote` is bound by the apply() closure (see top of apply).
       const [config, setConfig] = React.useState(null);
       const [resolved, setResolved] = React.useState(null);
       const [discovery, setDiscovery] = React.useState(null);
@@ -858,7 +860,16 @@ window.__ModuleLoader__.load({
 
     // ---- apply() ----------------------------------------------------------
     async function apply(ctx) {
+      // Mount the harmonyDevEco namespace before anything touches it.
+      // The browser-side `ctx.remote.harmonyDevEco` is a Proxy namespace created
+      // by $mount; reading the same key on the bundle's own ctx via ctx.get()
+      // resolves the namespace object.
       await ctx.remote.$mount(CLIENT_REMOTE);
+      // Bind the remote service into the apply-scope closure so the registered
+      // components (rendered through settings.section and better-sidebar tabs,
+      // where the supplied `ctx` is the host's own — not our bundle's) can
+      // still talk to the Host through the same mounted namespace.
+      const remote = ctx.get("remote.harmonyDevEco");
 
       const styleTag = document.createElement("style");
       styleTag.textContent = CSS;
