@@ -92,6 +92,40 @@ window.__ModuleLoader__.load({
 [data-dsh-deveco-settings-nav]>svg:first-child{display:none}
 [data-dsh-deveco-settings-nav]::before{content:'';flex:none;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M2 12h20'/%3E%3Cpath d='M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M2 12h20'/%3E%3Cpath d='M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z'/%3E%3C/svg%3E") center/contain no-repeat}
 
+/* Plugin-config collapsible card (mirrors ui-settings-plugins PluginCard) */
+.harm-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}
+.harm-card:hover{border-color:var(--dsw-alias-label-dimmed)}
+.harm-cardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}
+.harm-cardHeader{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}
+.harm-cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
+.harm-cardHeadText{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
+.harm-cardName{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4;display:inline-flex;align-items:center;gap:8px}
+.harm-cardBadge{display:inline-flex;align-items:center;height:18px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;line-height:18px;border:1px solid transparent}
+.harm-cardDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
+.harm-cardPending{white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);border-radius:999px;flex:none;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}
+.harm-cardChevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}
+.harm-cardChevronOpen{transform:rotate(180deg)}
+.harm-cardBody{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding:12px 0 8px}
+.harm-cardNote{color:var(--dsw-alias-label-tertiary);margin:0 0 10px;font-size:12px;line-height:1.5}
+.harm-fieldRow{flex-direction:column;gap:6px;padding:12px 0;display:flex}
+.harm-fieldRow+.harm-fieldRow{border-top:1px solid var(--dsw-alias-border-l2)}
+.harm-fieldHead{align-items:center;gap:8px;display:flex}
+.harm-fieldLabel{min-width:0;color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:1.5}
+.harm-fieldInput{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:0 12px;font-size:13px;line-height:1.5;width:100%;box-sizing:border-box}
+.harm-fieldInput:focus-visible{border-color:var(--dsw-alias-brand-primary);outline:none}
+.harm-fieldHint{color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;line-height:1.5}
+.harm-discovery{display:flex;flex-direction:column;gap:4px}
+.harm-discoveryItem{appearance:none;font:inherit;font-size:12px;line-height:1.5;text-align:left;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);padding:6px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.harm-discoveryItem:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}
+.harm-cardActions{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;align-items:center;gap:8px;padding:12px 0 4px;display:flex;margin-top:4px}
+.harm-cardError{min-width:0;color:var(--dsw-alias-label-error);flex:1;font-size:12px;line-height:1.5}
+.harm-cardDiscard,.harm-cardSave{appearance:none;font:inherit;cursor:pointer;border:1px solid transparent;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5}
+.harm-cardDiscard{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0}
+.harm-cardDiscard:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed)}
+.harm-cardSave{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
+.harm-cardDiscard:disabled,.harm-cardSave:disabled{opacity:.4;cursor:default}
+.harm-cardDiscard:focus-visible,.harm-cardSave:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+
 /* ArkTS syntax highlight */
 .ark-line{display:flex;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:20px;padding:0 8px;white-space:pre}
 .ark-line:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.04))}
@@ -703,32 +737,36 @@ window.__ModuleLoader__.load({
 
     // ---- plugin-config card (settings.plugin.item) -------------------------
     //
-    // The user-facing configuration surface for this plugin: a card inside the
-    // DSH Settings → Plugins → Configuration tab. It edits the settings
-    // namespace `harmony-deveco` directly through `ctx.settingsScope` (the
-    // official client-side settings transport), instead of a bespoke settings
-    // page. The Host half registered the namespace and re-resolves the
-    // toolchain on every `settings/document-updated`, so saving a path here
-    // takes effect immediately.
+    // The user-facing configuration surface for this plugin: a collapsible
+    // card inside Settings → 插件 → 配置, mirroring the official cards
+    // (终端 / Agent 循环 / …): an <li> shell with a header toggle, a staged
+    // form and a save/discard footer. Edits stay local until 保存; the mutual
+    // exclusion (CLT wins over Studio) is applied at save time through the
+    // bound settings scope.
     function HarmonySettingsCard(props) {
-      // Bound scope is created once per card mount by the apply() closure.
+      const [open, setOpen] = React.useState(false);
       const [resolved, setResolved] = React.useState(null);
       const [discovery, setDiscovery] = React.useState(null);
-      const [studioPath, setStudioPath] = React.useState("");
-      const [cltPath, setCltPath] = React.useState("");
+      // Saved values (mirrored from the bound scope) and staged drafts.
+      const [savedStudio, setSavedStudio] = React.useState("");
+      const [savedClt, setSavedClt] = React.useState("");
+      const [studioDraft, setStudioDraft] = React.useState("");
+      const [cltDraft, setCltDraft] = React.useState("");
       const [busy, setBusy] = React.useState(false);
       const [errorMsg, setErrorMsg] = React.useState("");
 
-      // Read the current values out of the bound scope (defined in apply()).
       // The client-side controller exposes getSnapshot() (NOT get() — that is
-      // the Host-side SettingsScope face); snapshot.value is the resolved
-      // section once status === 'ready'.
+      // the Host-side face); snapshot.value is the resolved section once ready.
       const sync = React.useCallback(() => {
         if (!settingsScope) return;
         const snap = settingsScope.getSnapshot();
         const value = (snap && snap.value) || {};
-        setStudioPath(typeof value.studioPath === "string" ? value.studioPath : "");
-        setCltPath(typeof value.cltPath === "string" ? value.cltPath : "");
+        const s = typeof value.studioPath === "string" ? value.studioPath : "";
+        const c = typeof value.cltPath === "string" ? value.cltPath : "";
+        setSavedStudio(s);
+        setSavedClt(c);
+        setStudioDraft(s);
+        setCltDraft(c);
       }, []);
 
       React.useEffect(() => {
@@ -752,15 +790,32 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => { loadToolchainState(); }, [loadToolchainState]);
 
-      const applyPath = async (field) => {
+      const dirty = studioDraft !== savedStudio || cltDraft !== savedClt;
+
+      const discard = () => {
+        setStudioDraft(savedStudio);
+        setCltDraft(savedClt);
+        setErrorMsg("");
+      };
+
+      // Single save point (official pattern): CLT wins over Studio; an empty
+      // draft clears its field; the mutex clears the sibling on write.
+      const save = async () => {
         if (!settingsScope) return;
         setBusy(true); setErrorMsg("");
         try {
-          const value = field === "cltPath" ? cltPath.trim() : studioPath.trim();
-          // Mutual exclusion: writing one field clears the other (user decision).
-          await settingsScope.set(field, value);
-          if (field === "cltPath") await settingsScope.unset("studioPath");
-          else await settingsScope.unset("cltPath");
+          const c = cltDraft.trim();
+          const s = studioDraft.trim();
+          if (c) {
+            await settingsScope.set("cltPath", c);
+            await settingsScope.unset("studioPath");
+          } else if (s) {
+            await settingsScope.set("studioPath", s);
+            await settingsScope.unset("cltPath");
+          } else {
+            await settingsScope.unset("cltPath");
+            await settingsScope.unset("studioPath");
+          }
           await loadToolchainState();
         } catch (e) {
           setErrorMsg(e instanceof Error ? e.message : String(e));
@@ -781,83 +836,105 @@ window.__ModuleLoader__.load({
         finally { setBusy(false); }
       };
 
-      const sourceLabel = resolved ? resolved.source : "加载中…";
-      const sourceMsg = resolved ? (resolved.message || "") : "从设置服务读取工具链状态…";
       const badgeCls = resolved && resolved.source === "devecocli" ? "harm-badge-ok"
         : resolved && resolved.source === "clt" && resolved.minVersionOk ? "harm-badge-ok"
         : resolved && resolved.source === "studio" ? "harm-badge-warn"
         : "harm-badge-err";
+      const sourceLabel = resolved ? resolved.source : "…";
 
       const studios = discovery && Array.isArray(discovery.studios) ? discovery.studios : [];
       const clts = discovery && Array.isArray(discovery.clts) ? discovery.clts : [];
 
+      const chevron = React.createElement(
+        "svg",
+        { className: "harm-cardChevron" + (open ? " harm-cardChevronOpen" : ""), width: 14, height: 14, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+        React.createElement("path", { d: "m6 9 6 6 6-6" }),
+      );
+
+      const studioField = React.createElement(
+        "div", { className: "harm-fieldRow" },
+        React.createElement("div", { className: "harm-fieldHead" },
+          React.createElement("label", { className: "harm-fieldLabel" }, "DevEco Studio 路径"),
+        ),
+        React.createElement("input", {
+          className: "harm-fieldInput", type: "text", value: studioDraft,
+          placeholder: "C:\\Program Files\\Huawei\\DevEco Studio",
+          onChange: (e) => setStudioDraft(e.target.value),
+        }),
+        studios.length > 0
+          ? React.createElement("div", { className: "harm-discovery" },
+              studios.map((s, i) =>
+                React.createElement("button", {
+                  key: i, type: "button", className: "harm-discoveryItem",
+                  title: s.path, disabled: busy,
+                  onClick: () => setStudioDraft(s.path),
+                }, s.path),
+              ),
+            )
+          : React.createElement("p", { className: "harm-fieldHint" }, "暂无自发现结果；可手动填写，或点下方「重新扫描」。"),
+      );
+
+      const cltField = React.createElement(
+        "div", { className: "harm-fieldRow" },
+        React.createElement("div", { className: "harm-fieldHead" },
+          React.createElement("label", { className: "harm-fieldLabel" }, "HarmonyOS Command Line Tools（≥ 26.0.0）"),
+        ),
+        React.createElement("input", {
+          className: "harm-fieldInput", type: "text", value: cltDraft,
+          placeholder: "C:\\Program Files\\Huawei\\Command Line Tools\\26.0.0",
+          onChange: (e) => setCltDraft(e.target.value),
+        }),
+        clts.length > 0
+          ? React.createElement("div", { className: "harm-discovery" },
+              clts.map((c, i) =>
+                React.createElement("button", {
+                  key: i, type: "button", className: "harm-discoveryItem",
+                  title: c.path, disabled: busy,
+                  onClick: () => setCltDraft(c.path),
+                }, c.path + "  ·  " + c.version),
+              ),
+            )
+          : React.createElement("p", { className: "harm-fieldHint" }, "暂无自发现结果；可手动填写，或点下方「重新扫描」。"),
+      );
+
       return React.createElement(
-        "div", { className: "harm-page" },
+        "li", { className: "harm-card" + (open ? " harm-cardOpen" : "") },
         React.createElement(
-          "div", { className: "harm-head" },
-          React.createElement("h3", { className: "harm-head-title" }, "HarmonyOS 开发套件配置"),
-          React.createElement("span", { className: "harm-badge " + badgeCls }, sourceLabel),
-          React.createElement("button", { className: "harm-btn", disabled: busy, onClick: rescan }, "重新扫描"),
-        ),
-        React.createElement("div", { className: "harm-status" }, sourceMsg),
-        React.createElement(
-          "div", { className: "harm-banner harm-banner-warn" },
-          "DevEco Studio 路径与 Command Line Tools 路径互斥：配置一个会清空另一个；同时配置时优先 Command Line Tools（最低 26.0.0）。PATH 中存在 devecocli 时优先使用并忽略以下路径。",
-        ),
-        errorMsg ? React.createElement("div", { className: "harm-error" }, errorMsg) : null,
-
-        React.createElement(
-          "div", { className: "harm-field" },
-          React.createElement("span", { className: "harm-label" }, "DevEco Studio 路径"),
+          "button", {
+            type: "button", className: "harm-cardHeader",
+            "aria-expanded": open, "aria-label": (open ? "收起设置: " : "展开设置: ") + "HarmonyOS Suite",
+            onClick: () => setOpen(!open),
+          },
           React.createElement(
-            "div", { className: "harm-row" },
-            React.createElement("input", {
-              className: "harm-input", value: studioPath,
-              onChange: (e) => setStudioPath(e.target.value),
-              placeholder: "C:\\Program Files\\Huawei\\DevEco Studio",
-            }),
-            React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: () => applyPath("studioPath") }, "应用"),
+            "span", { className: "harm-cardHeadText" },
+            React.createElement(
+              "span", { className: "harm-cardName" },
+              "HarmonyOS Suite",
+              React.createElement("span", { className: "harm-cardBadge " + badgeCls }, sourceLabel),
+            ),
+            React.createElement("span", { className: "harm-cardDescription" },
+              "DevEco Studio / Command Line Tools 路径、三平台自发现与互斥规则"),
           ),
-          studios.length > 0
-            ? React.createElement(
-                "div", { className: "harm-list" },
-                studios.map((s, i) =>
-                  React.createElement(
-                    "div", { key: i, className: "harm-list-item" },
-                    React.createElement("span", { className: "harm-list-item-path" }, s.path),
-                    React.createElement("button", { className: "harm-btn", disabled: busy, onClick: () => setStudioPath(s.path) }, "应用"),
-                  ),
-                ),
-              )
-            : React.createElement("div", { className: "harm-hint" }, "（暂无自发现结果，请点击「重新扫描」或手动填写路径）"),
+          dirty ? React.createElement("span", { className: "harm-cardPending" }, "未保存") : null,
+          chevron,
         ),
-
-        React.createElement(
-          "div", { className: "harm-field" },
-          React.createElement("span", { className: "harm-label" }, "HarmonyOS Command Line Tools 路径（≥ 26.0.0）"),
+        open ? React.createElement(
+          "div", { className: "harm-cardBody" },
           React.createElement(
-            "div", { className: "harm-row" },
-            React.createElement("input", {
-              className: "harm-input", value: cltPath,
-              onChange: (e) => setCltPath(e.target.value),
-              placeholder: "C:\\Program Files\\Huawei\\Command Line Tools\\26.0.0",
-            }),
-            React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: () => applyPath("cltPath") }, "应用"),
+            "p", { className: "harm-cardNote" },
+            "两者互斥：保存 CLT 会清空 Studio，反之亦然；同时配置时优先 CLT（最低 26.0.0）。PATH 中存在 devecocli 时优先使用并忽略以下路径。",
           ),
-          clts.length > 0
-            ? React.createElement(
-                "div", { className: "harm-list" },
-                clts.map((c, i) =>
-                  React.createElement(
-                    "div", { key: i, className: "harm-list-item" },
-                    React.createElement("span", { className: "harm-list-item-path" }, c.path),
-                    React.createElement("span", { className: "harm-list-item-ver" }, c.version),
-                    React.createElement("button", { className: "harm-btn", disabled: busy, onClick: () => setCltPath(c.path) }, "应用"),
-                  ),
-                ),
-              )
-            : React.createElement("div", { className: "harm-hint" }, "（暂无自发现结果，请点击「重新扫描」或手动填写路径）"),
-        ),
+          studioField,
+          cltField,
+          React.createElement(
+            "div", { className: "harm-cardActions" },
+            React.createElement("button", { type: "button", className: "harm-btn", disabled: busy, onClick: rescan }, "重新扫描"),
+            React.createElement("span", { style: { flex: 1 } }),
+            errorMsg ? React.createElement("span", { className: "harm-cardError" }, errorMsg) : null,
+            React.createElement("button", { type: "button", className: "harm-cardDiscard", disabled: !dirty || busy, onClick: discard }, "放弃"),
+            React.createElement("button", { type: "button", className: "harm-cardSave", disabled: (!dirty && !busy) || busy, onClick: save }, busy ? "保存中…" : "保存"),
+          ),
+        ) : null,
       );
     }
 
