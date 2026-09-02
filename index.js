@@ -19,8 +19,8 @@
 
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import { settingsNamespace, installSettingsSection } from "@deepseek-ai/dsh-settings";
+import Schema from "@deepseek-ai/schemastery";
 import { Service } from "@deepseek-ai/cordis";
-import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
@@ -276,14 +276,16 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     }
 
     // Register the HarmonyOS Suite settings namespace with the Host settings
-    // service. The schema is the user-facing toolchain picker: both fields
-    // default to "" so an empty section still resolves to a usable object. The
-    // Service subscribes to the resolved source through setSource, so any
-    // settings.document-updated event from the client (e.g. when the user
-    // saves in the settings page) immediately re-runs resolveCli.
-    const HarmonyConfigSchema = z.object({
-      studioPath: z.string().default(""),
-      cltPath: z.string().default(""),
+    // service. The schema MUST be a **schemastery** schema (the settings
+    // service calls it as `schema(value)`), not zod — a zod object is not
+    // callable and the registration would throw. Both fields default to ""
+    // so an empty section still resolves to a usable object. The Service
+    // receives the authoritative source through setSource, so any
+    // settings/document-updated (e.g. the user saving in the plugin-config
+    // card) immediately re-runs resolveCli.
+    const HarmonyConfigSchema = Schema.object({
+      studioPath: Schema.string().default(""),
+      cltPath: Schema.string().default(""),
     });
     const defaultConfig = { studioPath: "", cltPath: "" };
     let source = () => defaultConfig;

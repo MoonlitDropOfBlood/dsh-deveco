@@ -310,20 +310,78 @@ window.__ModuleLoader__.load({
       });
     }
 
-    // ---- main tab ---------------------------------------------------------
-    function HarmonySuiteTab(props) {
-      // `remote` is bound by the apply() closure above — the props.ctx is the
-      // host's own (better-sidebar's), not our bundle's, so reading the
-      // namespace through props.ctx would always miss.
-      const [subTab, setSubTab] = React.useState("hilog");
-      const [config, setConfig] = React.useState(null);
-      const [resolved, setResolved] = React.useState(null);
+    // ---- shared device hook -------------------------------------------------
+    // Both feature tabs need the device list. A small shared hook keeps each
+    // tab independent (its own state, its own refresh) without coupling them.
+    function useDeviceList() {
       const [devices, setDevices] = React.useState([]);
       const [device, setDevice] = React.useState("");
+      const refresh = React.useCallback(async () => {
+        if (!remote) return;
+        try {
+          const r = await remote.deviceList();
+          const out = unwrap(r);
+          if (out.ok && out.value && Array.isArray(out.value.devices)) {
+            setDevices(out.value.devices);
+            setDevice((prev) => {
+              if (prev && out.value.devices.some((d) => d.serial === prev)) return prev;
+              return out.value.devices.length > 0 ? (out.value.devices[0].serial || "") : "";
+            });
+          }
+        } catch (e) { /* */ }
+      }, []);
+      React.useEffect(() => { refresh(); }, [refresh]);
+      return { devices, device, setDevice, refresh };
+    }
+
+    function useToolchainBadge() {
+      const [resolved, setResolved] = React.useState(null);
+      React.useEffect(() => {
+        let alive = true;
+        (async () => {
+          if (!remote) return;
+          try {
+            const r = await remote.getConfig();
+            const out = unwrap(r);
+            if (alive && out.ok && out.value) setResolved(out.value.resolved || null);
+          } catch (e) { /* */ }
+        })();
+        return () => { alive = false; };
+      }, []);
+      const cls = resolved && resolved.source === "devecocli" ? "harm-badge-ok"
+        : resolved && resolved.source === "clt" && resolved.minVersionOk ? "harm-badge-ok"
+        : resolved && resolved.source === "studio" ? "harm-badge-warn"
+        : "harm-badge-err";
+      return { resolved, cls, label: resolved ? resolved.source : "…" };
+    }
+
+    function DevicePicker(props) {
+      const { devices, device, setDevice, refresh, busy } = props;
+      return React.createElement(
+        React.Fragment, null,
+        React.createElement(
+          "select",
+          {
+            className: "harm-input",
+            style: { minWidth: 0, maxWidth: 220, flex: "0 1 auto" },
+            value: device,
+            onChange: (e) => setDevice(e.target.value),
+          },
+          React.createElement("option", { value: "" }, "未选择"),
+          devices.map((d, i) =>
+            React.createElement("option", { key: i, value: d.serial }, d.name || d.serial),
+          ),
+        ),
+        React.createElement("button", { className: "harm-btn", disabled: !!busy, onClick: refresh }, "刷新设备"),
+      );
+    }
+
+    // ---- HiLog 检查器 tab（独立入口）--------------------------------------
+    function HarmonyHiLogTab(props) {
+      const { devices, device, setDevice, refresh: refreshDevices } = useDeviceList();
+      const badge = useToolchainBadge();
       const [busy, setBusy] = React.useState(false);
       const [errorMsg, setErrorMsg] = React.useState("");
-
-      // HiLog state
       const [hilogLines, setHilogLines] = React.useState([]);
       const [hilogStreamId, setHilogStreamId] = React.useState("");
       const [hilogRunning, setHilogRunning] = React.useState(false);
@@ -331,47 +389,6 @@ window.__ModuleLoader__.load({
       const [hilogBundle, setHilogBundle] = React.useState("");
       const [hilogKeyword, setHilogKeyword] = React.useState("");
 
-      // ArkUI state
-      const [uiNodes, setUiNodes] = React.useState([]);
-      const [selectedNode, setSelectedNode] = React.useState(-1);
-      const [tapX, setTapX] = React.useState("");
-      const [tapY, setTapY] = React.useState("");
-      const [swipeX1, setSwipeX1] = React.useState("");
-      const [swipeY1, setSwipeY1] = React.useState("");
-      const [swipeX2, setSwipeX2] = React.useState("");
-      const [swipeY2, setSwipeY2] = React.useState("");
-      const [swipeSpeed, setSwipeSpeed] = React.useState("");
-      const [textInput, setTextInput] = React.useState("");
-      const [screenshotPath, setScreenshotPath] = React.useState("");
-
-      // initial config + devices
-      const refreshConfig = React.useCallback(async () => {
-        if (!remote) return;
-        try {
-          const r = await remote.getConfig();
-          const out = unwrap(r);
-          if (out.ok && out.value) {
-            setConfig(out.value.config || null);
-            setResolved(out.value.resolved || null);
-          }
-        } catch (e) { /* */ }
-      }, [remote]);
-
-      const refreshDevices = React.useCallback(async () => {
-        if (!remote) return;
-        try {
-          const r = await remote.deviceList();
-          const out = unwrap(r);
-          if (out.ok && out.value && Array.isArray(out.value.devices)) {
-            setDevices(out.value.devices);
-            if (!device && out.value.devices.length > 0) setDevice(out.value.devices[0].serial || "");
-          }
-        } catch (e) { /* */ }
-      }, [remote, device]);
-
-      React.useEffect(() => { refreshConfig(); refreshDevices(); }, [refreshConfig, refreshDevices]);
-
-      // HiLog streaming poll
       React.useEffect(() => {
         if (!hilogRunning || !hilogStreamId || !remote) return;
         let cancelled = false;
@@ -438,6 +455,93 @@ window.__ModuleLoader__.load({
         setHilogStreamId("");
         setBusy(false);
       };
+
+      if (!remote) {
+        return React.createElement("div", { className: "harm-page" },
+          React.createElement("div", { className: "harm-empty" }, "Remote 命名空间尚未挂载（请检查 console 报错）"));
+      }
+
+      const levelChips = LEVEL_BADGES.map((lv) =>
+        React.createElement(
+          "span",
+          {
+            key: lv, className: "harm-chip" + (hilogLevels.has(lv) ? " harm-chip-on" : ""),
+            onClick: () => toggleLevel(lv),
+          },
+          lv,
+        ),
+      );
+      const linesView = hilogLines.length === 0
+        ? React.createElement("div", { className: "harm-empty" }, hilogRunning ? "等待日志…" : "尚未启动 HiLog 流。设置过滤后点击「开始」。")
+        : React.createElement("div", { className: "harm-scroll" },
+            hilogLines.map((l, i) =>
+              React.createElement(
+                "div",
+                { key: i, className: "harm-log-line" },
+                l.level
+                  ? React.createElement("span", { className: "harm-log-level harm-level-" + l.level }, l.level)
+                  : React.createElement("span", { className: "harm-log-level" }, "?"),
+                l.pid !== undefined ? React.createElement("span", { className: "harm-log-pid" }, "pid " + l.pid) : null,
+                l.tag ? React.createElement("span", { className: "harm-log-tag" }, l.tag) : null,
+                l.message
+                  ? React.createElement("span", { className: "harm-log-msg" }, l.message)
+                  : React.createElement("span", { className: "harm-log-raw" }, l.raw || ""),
+              ),
+            ),
+          );
+
+      return React.createElement(
+        "div", { className: "harm-page" },
+        React.createElement(
+          "div", { className: "harm-head" },
+          React.createElement("h3", { className: "harm-head-title" }, "HiLog 检查器"),
+          React.createElement("span", { className: "harm-badge " + badge.cls }, badge.label),
+        ),
+        React.createElement(
+          "div", { className: "harm-row" },
+          React.createElement(DevicePicker, { devices, device, setDevice, refresh: refreshDevices, busy }),
+          hilogRunning
+            ? React.createElement("button", { className: "harm-btn harm-btn-danger", disabled: busy, onClick: stopHilog }, "停止")
+            : React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: startHilog }, "开始"),
+        ),
+        React.createElement(
+          "div", { className: "harm-row" },
+          React.createElement("span", { className: "harm-label" }, "级别"),
+          levelChips,
+        ),
+        React.createElement(
+          "div", { className: "harm-row" },
+          React.createElement("div", { className: "harm-field" },
+            React.createElement("span", { className: "harm-label" }, "包名"),
+            React.createElement("input", { className: "harm-input", value: hilogBundle, onChange: (e) => setHilogBundle(e.target.value), placeholder: "可选，如 com.example.app" }),
+          ),
+          React.createElement("div", { className: "harm-field" },
+            React.createElement("span", { className: "harm-label" }, "关键词"),
+            React.createElement("input", { className: "harm-input", value: hilogKeyword, onChange: (e) => setHilogKeyword(e.target.value), placeholder: "可选，如 focus" }),
+          ),
+        ),
+        errorMsg ? React.createElement("div", { className: "harm-error" }, errorMsg) : null,
+        linesView,
+      );
+    }
+
+    // ---- ArkUI Inspector tab（独立入口）------------------------------------
+    function HarmonyArkUITab(props) {
+      const { devices, device, setDevice, refresh: refreshDevices } = useDeviceList();
+      const badge = useToolchainBadge();
+      const [busy, setBusy] = React.useState(false);
+      const [errorMsg, setErrorMsg] = React.useState("");
+      const [uiNodes, setUiNodes] = React.useState([]);
+      const [selectedNode, setSelectedNode] = React.useState(-1);
+      const [tapX, setTapX] = React.useState("");
+      const [tapY, setTapY] = React.useState("");
+      const [swipeX1, setSwipeX1] = React.useState("");
+      const [swipeY1, setSwipeY1] = React.useState("");
+      const [swipeX2, setSwipeX2] = React.useState("");
+      const [swipeY2, setSwipeY2] = React.useState("");
+      const [swipeSpeed, setSwipeSpeed] = React.useState("");
+      const [textInput, setTextInput] = React.useState("");
+      const [screenshotPath, setScreenshotPath] = React.useState("");
 
       const doDump = async () => {
         if (!remote) return;
@@ -506,198 +610,86 @@ window.__ModuleLoader__.load({
         finally { setBusy(false); }
       };
 
-      // ---- view ----------------------------------------------------------
       if (!remote) {
-        return React.createElement(
-          "div", { className: "harm-page" },
-          React.createElement("div", { className: "harm-empty" }, "Remote 命名空间尚未挂载（请检查 console 报错）"),
-        );
+        return React.createElement("div", { className: "harm-page" },
+          React.createElement("div", { className: "harm-empty" }, "Remote 命名空间尚未挂载（请检查 console 报错）"));
       }
 
-      const statusMsg = resolved ? resolved.message : (resolved === null ? "未配置" : "加载中…");
-
-      const tabsBar = React.createElement(
-        "div", { className: "harm-tabs" },
-        React.createElement(
-          "button",
-          { className: "harm-tab" + (subTab === "hilog" ? " harm-tab-active" : ""), onClick: () => setSubTab("hilog") },
-          "HiLog",
-        ),
-        React.createElement(
-          "button",
-          { className: "harm-tab" + (subTab === "arkui" ? " harm-tab-active" : ""), onClick: () => setSubTab("arkui") },
-          "ArkUI Inspector",
-        ),
-        React.createElement(
-          "button",
-          { className: "harm-tab" + (subTab === "projects" ? " harm-tab-active" : ""), onClick: () => setSubTab("projects") },
-          "Projects",
-        ),
-      );
-
-      const devicePicker = React.createElement(
-        "select",
-        {
-          className: "harm-input",
-          style: { minWidth: 0, maxWidth: 220, flex: "0 1 auto" },
-          value: device,
-          onChange: (e) => setDevice(e.target.value),
-        },
-        React.createElement("option", { value: "" }, "未选择"),
-        devices.map((d, i) =>
-          React.createElement("option", { key: i, value: d.serial }, d.name || d.serial),
-        ),
-      );
-
-      let body;
-      if (subTab === "hilog") {
-        const levelChips = LEVEL_BADGES.map((lv) =>
-          React.createElement(
-            "span",
-            {
-              key: lv, className: "harm-chip" + (hilogLevels.has(lv) ? " harm-chip-on" : ""),
-              onClick: () => toggleLevel(lv),
-            },
-            lv,
-          ),
-        );
-        const linesView = hilogLines.length === 0
-          ? React.createElement("div", { className: "harm-empty" }, hilogRunning ? "等待日志…" : "尚未启动 HiLog 流。设置过滤后点击「开始」。")
-          : React.createElement("div", { className: "harm-scroll" },
-              hilogLines.map((l, i) =>
-                React.createElement(
-                  "div",
-                  { key: i, className: "harm-log-line" },
-                  l.level
-                    ? React.createElement("span", { className: "harm-log-level harm-level-" + l.level }, l.level)
-                    : React.createElement("span", { className: "harm-log-level" }, "?"),
-                  l.pid !== undefined ? React.createElement("span", { className: "harm-log-pid" }, "pid " + l.pid) : null,
-                  l.tag ? React.createElement("span", { className: "harm-log-tag" }, l.tag) : null,
-                  l.message
-                    ? React.createElement("span", { className: "harm-log-msg" }, l.message)
-                    : React.createElement("span", { className: "harm-log-raw" }, l.raw || ""),
-                ),
-              ),
-            );
-        body = React.createElement(
-          "div", { className: "harm-page" },
-          React.createElement(
-            "div", { className: "harm-row" },
-            devicePicker,
-            React.createElement("button", { className: "harm-btn", disabled: busy, onClick: refreshDevices }, "刷新设备"),
-            hilogRunning
-              ? React.createElement("button", { className: "harm-btn harm-btn-danger", disabled: busy, onClick: stopHilog }, "停止")
-              : React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: startHilog }, "开始"),
-          ),
-          React.createElement(
-            "div", { className: "harm-row" },
-            React.createElement("span", { className: "harm-label" }, "级别"),
-            levelChips,
-          ),
-          React.createElement(
-            "div", { className: "harm-row" },
-            React.createElement("div", { className: "harm-field" },
-              React.createElement("span", { className: "harm-label" }, "包名"),
-              React.createElement("input", { className: "harm-input", value: hilogBundle, onChange: (e) => setHilogBundle(e.target.value), placeholder: "可选，如 com.example.app" }),
-            ),
-            React.createElement("div", { className: "harm-field" },
-              React.createElement("span", { className: "harm-label" }, "关键词"),
-              React.createElement("input", { className: "harm-input", value: hilogKeyword, onChange: (e) => setHilogKeyword(e.target.value), placeholder: "可选，如 focus" }),
-            ),
-          ),
-          linesView,
-        );
-      } else if (subTab === "arkui") {
-        const treeView = uiNodes.length === 0
-          ? React.createElement("div", { className: "harm-empty" }, "尚未 Dump UI。点击「Dump UI」获取节点树。")
-          : React.createElement("div", { className: "harm-tree" },
-              uiNodes.map((n, i) =>
-                React.createElement(
-                  "div",
-                  {
-                    key: i,
-                    className: "harm-tree-node" + (selectedNode === i ? " selected" : ""),
-                    onClick: () => {
-                      setSelectedNode(i);
-                      const b = n.bounds || {};
-                      setTapX(String(Math.round((b.left + b.right) / 2) || ""));
-                      setTapY(String(Math.round((b.top + b.bottom) / 2) || ""));
-                    },
+      const treeView = uiNodes.length === 0
+        ? React.createElement("div", { className: "harm-empty" }, "尚未 Dump UI。点击「Dump UI」获取节点树。")
+        : React.createElement("div", { className: "harm-tree" },
+            uiNodes.map((n, i) =>
+              React.createElement(
+                "div",
+                {
+                  key: i,
+                  className: "harm-tree-node" + (selectedNode === i ? " selected" : ""),
+                  onClick: () => {
+                    setSelectedNode(i);
+                    const b = n.bounds || {};
+                    setTapX(String(Math.round((b.left + b.right) / 2) || ""));
+                    setTapY(String(Math.round((b.top + b.bottom) / 2) || ""));
                   },
-                  React.createElement("span", { className: "harm-tree-idx" }, "#" + (n.index !== undefined ? n.index : i)),
-                  React.createElement("span", { className: "harm-tree-class" }, n.className || ""),
-                  n.text ? React.createElement("span", { className: "harm-tree-text" }, n.text) : null,
-                  n.resourceId ? React.createElement("span", { className: "harm-tree-rid" }, "#" + n.resourceId) : null,
-                  React.createElement("span", { className: "harm-tree-bounds" }, n.boundsStr || ""),
-                ),
+                },
+                React.createElement("span", { className: "harm-tree-idx" }, "#" + (n.index !== undefined ? n.index : i)),
+                React.createElement("span", { className: "harm-tree-class" }, n.className || ""),
+                n.text ? React.createElement("span", { className: "harm-tree-text" }, n.text) : null,
+                n.resourceId ? React.createElement("span", { className: "harm-tree-rid" }, "#" + n.resourceId) : null,
+                React.createElement("span", { className: "harm-tree-bounds" }, n.boundsStr || ""),
               ),
-            );
-        body = React.createElement(
-          "div", { className: "harm-page" },
-          React.createElement(
-            "div", { className: "harm-row" },
-            devicePicker,
-            React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doDump }, "Dump UI"),
-            React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doScreenshot }, "Screenshot"),
-          ),
-          React.createElement(
-            "div", { className: "harm-split" },
-            React.createElement("div", null,
-              React.createElement("div", { className: "harm-label" }, "UI 树"),
-              treeView,
             ),
-            React.createElement("div", null,
-              React.createElement("div", { className: "harm-label" }, "Screenshot"),
-              screenshotPath
-                ? React.createElement("div", { className: "harm-empty" }, "已保存到：" + screenshotPath)
-                : React.createElement("div", { className: "harm-empty" }, "尚未截图"),
-            ),
-          ),
-          React.createElement(
-            "div", { className: "harm-row" },
-            React.createElement("span", { className: "harm-label" }, "Tap"),
-            React.createElement("input", { className: "harm-input", style: { minWidth: 80, flex: "0 1 80px" }, value: tapX, onChange: (e) => setTapX(e.target.value), placeholder: "x" }),
-            React.createElement("input", { className: "harm-input", style: { minWidth: 80, flex: "0 1 80px" }, value: tapY, onChange: (e) => setTapY(e.target.value), placeholder: "y" }),
-            React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doTap }, "执行"),
-          ),
-          React.createElement(
-            "div", { className: "harm-row" },
-            React.createElement("span", { className: "harm-label" }, "Swipe"),
-            React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeX1, onChange: (e) => setSwipeX1(e.target.value), placeholder: "x1" }),
-            React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeY1, onChange: (e) => setSwipeY1(e.target.value), placeholder: "y1" }),
-            React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeX2, onChange: (e) => setSwipeX2(e.target.value), placeholder: "x2" }),
-            React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeY2, onChange: (e) => setSwipeY2(e.target.value), placeholder: "y2" }),
-            React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeSpeed, onChange: (e) => setSwipeSpeed(e.target.value), placeholder: "speed" }),
-            React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doSwipe }, "执行"),
-          ),
-          React.createElement(
-            "div", { className: "harm-row" },
-            React.createElement("span", { className: "harm-label" }, "Text"),
-            React.createElement("input", { className: "harm-input", value: textInput, onChange: (e) => setTextInput(e.target.value), placeholder: "输入文本" }),
-            React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doText }, "执行"),
-          ),
-        );
-      } else {
-        body = React.createElement("div", { className: "harm-empty" }, "项目浏览器开发中（v1.1 路线）。当前 listProjects 返回空数组。");
-      }
+          );
 
       return React.createElement(
         "div", { className: "harm-page" },
         React.createElement(
           "div", { className: "harm-head" },
-          React.createElement("h3", { className: "harm-head-title" }, "HarmonyOS Suite"),
-          React.createElement("span", {
-            className: "harm-badge" + (resolved && resolved.source === "devecocli" ? " harm-badge-ok"
-              : resolved && resolved.source === "clt" && resolved.minVersionOk ? " harm-badge-ok"
-              : resolved && resolved.source === "studio" ? " harm-badge-warn"
-              : resolved && resolved.source === "clt" ? " harm-badge-err"
-              : " harm-badge-err"),
-          }, resolved ? resolved.source : "loading"),
+          React.createElement("h3", { className: "harm-head-title" }, "ArkUI Inspector"),
+          React.createElement("span", { className: "harm-badge " + badge.cls }, badge.label),
         ),
-        React.createElement("div", { className: "harm-status" }, statusMsg),
-        tabsBar,
+        React.createElement(
+          "div", { className: "harm-row" },
+          React.createElement(DevicePicker, { devices, device, setDevice, refresh: refreshDevices, busy }),
+          React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doDump }, "Dump UI"),
+          React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doScreenshot }, "Screenshot"),
+        ),
+        React.createElement(
+          "div", { className: "harm-split" },
+          React.createElement("div", null,
+            React.createElement("div", { className: "harm-label" }, "UI 树"),
+            treeView,
+          ),
+          React.createElement("div", null,
+            React.createElement("div", { className: "harm-label" }, "Screenshot"),
+            screenshotPath
+              ? React.createElement("div", { className: "harm-empty" }, "已保存到：" + screenshotPath)
+              : React.createElement("div", { className: "harm-empty" }, "尚未截图"),
+          ),
+        ),
+        React.createElement(
+          "div", { className: "harm-row" },
+          React.createElement("span", { className: "harm-label" }, "Tap"),
+          React.createElement("input", { className: "harm-input", style: { minWidth: 80, flex: "0 1 80px" }, value: tapX, onChange: (e) => setTapX(e.target.value), placeholder: "x" }),
+          React.createElement("input", { className: "harm-input", style: { minWidth: 80, flex: "0 1 80px" }, value: tapY, onChange: (e) => setTapY(e.target.value), placeholder: "y" }),
+          React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doTap }, "执行"),
+        ),
+        React.createElement(
+          "div", { className: "harm-row" },
+          React.createElement("span", { className: "harm-label" }, "Swipe"),
+          React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeX1, onChange: (e) => setSwipeX1(e.target.value), placeholder: "x1" }),
+          React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeY1, onChange: (e) => setSwipeY1(e.target.value), placeholder: "y1" }),
+          React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeX2, onChange: (e) => setSwipeX2(e.target.value), placeholder: "x2" }),
+          React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeY2, onChange: (e) => setSwipeY2(e.target.value), placeholder: "y2" }),
+          React.createElement("input", { className: "harm-input", style: { minWidth: 70, flex: "0 1 70px" }, value: swipeSpeed, onChange: (e) => setSwipeSpeed(e.target.value), placeholder: "speed" }),
+          React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doSwipe }, "执行"),
+        ),
+        React.createElement(
+          "div", { className: "harm-row" },
+          React.createElement("span", { className: "harm-label" }, "Text"),
+          React.createElement("input", { className: "harm-input", value: textInput, onChange: (e) => setTextInput(e.target.value), placeholder: "输入文本" }),
+          React.createElement("button", { className: "harm-btn", disabled: busy, onClick: doText }, "执行"),
+        ),
         errorMsg ? React.createElement("div", { className: "harm-error" }, errorMsg) : null,
-        body,
       );
     }
 
@@ -870,6 +862,20 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /** HiLog tab icon: stacked log lines (Lucide "scroll-text" style). */
+    function HarmonyLogIcon(props) {
+      const size = props.size || 16;
+      return React.createElement(
+        "svg",
+        { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" },
+        React.createElement("path", { d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }),
+        React.createElement("path", { d: "M14 2v4a2 2 0 0 0 2 2h4" }),
+        React.createElement("path", { d: "M10 9H8" }),
+        React.createElement("path", { d: "M16 13H8" }),
+        React.createElement("path", { d: "M16 17H8" }),
+      );
+    }
+
     // ---- apply() ----------------------------------------------------------
     async function apply(ctx) {
       // Mount the harmonyDevEco namespace before anything touches it.
@@ -898,18 +904,30 @@ window.__ModuleLoader__.load({
 
       ctx.effect(() => registerSettingsNavIcon(SETTINGS_LABEL));
 
-      // better-sidebar tab + ets viewer (graceful when not installed)
+      // better-sidebar tabs + ets viewer (graceful when not installed).
+      // Two independent feature tabs — the HiLog 检查器 and the ArkUI
+      // Inspector — plus the .ets file viewer.
       const sidebar = ctx.get("betterSidebar");
       if (sidebar) {
-        const disposeTab = sidebar.registerTab({
-          id: "harmony-suite",
-          title: () => "HarmonyOS Suite",
-          icon: (size) => React.createElement(HarmonyIcon, { size }),
+        const disposeHilog = sidebar.registerTab({
+          id: "harmony-hilog",
+          title: () => "HiLog 检查器",
+          icon: (size) => React.createElement(HarmonyLogIcon, { size }),
           order: 50,
           single: true,
-          component: HarmonySuiteTab,
+          component: HarmonyHiLogTab,
         });
-        ctx.effect(() => disposeTab);
+        ctx.effect(() => disposeHilog);
+
+        const disposeArkui = sidebar.registerTab({
+          id: "harmony-arkui",
+          title: () => "ArkUI Inspector",
+          icon: (size) => React.createElement(HarmonyIcon, { size }),
+          order: 51,
+          single: true,
+          component: HarmonyArkUITab,
+        });
+        ctx.effect(() => disposeArkui);
 
         const disposeViewer = sidebar.registerFileViewer({
           id: "arkts",
