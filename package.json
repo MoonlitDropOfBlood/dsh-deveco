@@ -32,7 +32,10 @@
   "keywords": ["dsh", "deepseek-harness", "plugin", "harmonyos", "arkts", "deveco", "hilog", "arkui"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web" }
+    "client": {
+      "platform": "web",
+      "external": ["dsh-better-sidebar"]
+    }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
