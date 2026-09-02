@@ -99,8 +99,10 @@ window.__ModuleLoader__.load({
 .harm-cardHeader{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}
 .harm-cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}
 .harm-cardHeadText{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
-.harm-cardName{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4;display:inline-flex;align-items:center;gap:8px}
-.harm-cardBadge{display:inline-flex;align-items:center;height:18px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:500;line-height:18px;border:1px solid transparent}
+.harm-cardName{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4;display:inline-flex;align-items:center;gap:10px}
+.harm-cardBadge{display:inline-flex;align-items:center;height:24px;padding:0 12px;border-radius:999px;font-size:12px;font-weight:600;line-height:24px;border:1px solid transparent;white-space:nowrap}
+.harm-badge-info{background:var(--dsw-alias-button-info-fill,#4a7dff);color:#fff;border-color:transparent}
+.harm-badge-muted{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l1)}
 .harm-cardDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
 .harm-cardPending{white-space:nowrap;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);border-radius:999px;flex:none;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}
 .harm-cardChevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}
@@ -376,6 +378,31 @@ window.__ModuleLoader__.load({
       return { devices, device, setDevice, refresh };
     }
 
+    /**
+     * One shared badge model for the toolchain resolution state. The label is
+     * Chinese and self-explanatory (the raw `source` enum alone reads like an
+     * error); DevEco Studio is a legitimate fallback, so it uses the info
+     * tint — red is reserved for states that need action (no toolchain at
+     * all, or a CLT below the 26.0.0 floor).
+     */
+    function toolchainBadgeFor(resolved) {
+      if (!resolved) return { cls: "harm-badge-muted", label: "检测中…", title: "正在读取工具链状态" };
+      const v = typeof resolved.version === "string" ? resolved.version
+        : Array.isArray(resolved.version) ? resolved.version.join(".") : "";
+      if (resolved.source === "devecocli") {
+        return { cls: "harm-badge-ok", label: "devecocli（PATH）", title: resolved.message };
+      }
+      if (resolved.source === "clt") {
+        return resolved.minVersionOk
+          ? { cls: "harm-badge-ok", label: v ? "Command Line Tools " + v : "Command Line Tools", title: resolved.message }
+          : { cls: "harm-badge-err", label: "CLT 版本过低（需 ≥ 26.0.0）", title: resolved.message };
+      }
+      if (resolved.source === "studio") {
+        return { cls: "harm-badge-info", label: "DevEco Studio", title: resolved.message };
+      }
+      return { cls: "harm-badge-err", label: "未配置工具链", title: resolved.message };
+    }
+
     function useToolchainBadge() {
       const [resolved, setResolved] = React.useState(null);
       React.useEffect(() => {
@@ -390,11 +417,8 @@ window.__ModuleLoader__.load({
         })();
         return () => { alive = false; };
       }, []);
-      const cls = resolved && resolved.source === "devecocli" ? "harm-badge-ok"
-        : resolved && resolved.source === "clt" && resolved.minVersionOk ? "harm-badge-ok"
-        : resolved && resolved.source === "studio" ? "harm-badge-warn"
-        : "harm-badge-err";
-      return { resolved, cls, label: resolved ? resolved.source : "…" };
+      const badge = toolchainBadgeFor(resolved);
+      return { resolved, cls: badge.cls, label: badge.label, title: badge.title };
     }
 
     function DevicePicker(props) {
@@ -836,11 +860,7 @@ window.__ModuleLoader__.load({
         finally { setBusy(false); }
       };
 
-      const badgeCls = resolved && resolved.source === "devecocli" ? "harm-badge-ok"
-        : resolved && resolved.source === "clt" && resolved.minVersionOk ? "harm-badge-ok"
-        : resolved && resolved.source === "studio" ? "harm-badge-warn"
-        : "harm-badge-err";
-      const sourceLabel = resolved ? resolved.source : "…";
+      const badge = toolchainBadgeFor(resolved);
 
       const studios = discovery && Array.isArray(discovery.studios) ? discovery.studios : [];
       const clts = discovery && Array.isArray(discovery.clts) ? discovery.clts : [];
@@ -910,7 +930,10 @@ window.__ModuleLoader__.load({
             React.createElement(
               "span", { className: "harm-cardName" },
               "HarmonyOS Suite",
-              React.createElement("span", { className: "harm-cardBadge " + badgeCls }, sourceLabel),
+              React.createElement("span", {
+                className: "harm-cardBadge " + badge.cls,
+                title: badge.title,
+              }, badge.label),
             ),
             React.createElement("span", { className: "harm-cardDescription" },
               "DevEco Studio / Command Line Tools 路径、三平台自发现与互斥规则"),

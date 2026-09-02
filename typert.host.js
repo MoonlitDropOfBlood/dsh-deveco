@@ -354,24 +354,31 @@ const deviceInfoValueSchema = z
  * typert-loader accepts it without surprises.
  */
 function iv(method, paramSchema, resultValueSchema, summary, jsDoc) {
+  // A parameter-less Remote (getConfig / getSettingsNamespace / rescan /
+  // deviceList / listProjects) passes `null` and declares NO wire parameter —
+  // the gateway rejects args missing a declared parameter, so such methods
+  // must not produce a request slot. Passing the empty-object schema is not
+  // reliable: these schemas are wrapped in .readonly(), whose `.shape` is
+  // undefined, not `{}`.
+  const parameters = paramSchema === null ? [] : [
+    {
+      name: "request",
+      wire: "request",
+      source: "json",
+      codec: {
+        mode: "strict",
+        typeSymbol: "dsh-deveco#HarmonyDevEco" + method[0].toUpperCase() + method.slice(1) + "Request",
+        schema: paramSchema,
+      },
+    },
+  ];
   return {
     id: "dsh-deveco#harmonyDevEco/" + method,
     service: "harmonyDevEco",
     namespace: "harmonyDevEco",
     method,
     invocation: { kind: "direct" },
-    parameters: [
-      {
-        name: "request",
-        wire: "request",
-        source: "json",
-        codec: {
-          mode: "strict",
-          typeSymbol: "dsh-deveco#HarmonyDevEco" + method[0].toUpperCase() + method.slice(1) + "Request",
-          schema: paramSchema,
-        },
-      },
-    ],
+    parameters,
     result: {
       mode: "strict",
       typeSymbol: "dsh-deveco#HarmonyDevEco" + method[0].toUpperCase() + method.slice(1) + "Result",
@@ -388,19 +395,19 @@ export const TYPERT = {
   face: "host",
   schemas: [],
   invocations: [
-    iv("getConfig", _harmonyDevEco_getConfig_parameter_0$schema, getConfigValueSchema,
+    iv("getConfig", null, getConfigValueSchema,
       "Read the current toolchain config, the resolved CLI source, and the latest discovery snapshot.",
       "/**\n * Read the current toolchain config, the resolved CLI source, and the latest discovery snapshot.\n */"),
 
-    iv("getSettingsNamespace", _harmonyDevEco_getConfig_parameter_0$schema, getSettingsNamespaceValueSchema,
+    iv("getSettingsNamespace", null, getSettingsNamespaceValueSchema,
       "Return the settings namespace key the client card writes through (settings.plugin.item).",
       "/**\n * Return the settings namespace key the client card writes through.\n * @returns the namespace string the client binds via `ctx.settingsScope.bind({ namespace })`.\n */"),
 
-    iv("rescan", _harmonyDevEco_rescan_parameter_0$schema, rescanValueSchema,
+    iv("rescan", null, rescanValueSchema,
       "Re-run toolchain auto-discovery and persist the result to disk.",
       "/**\n * Re-run toolchain auto-discovery and persist the result to disk.\n */"),
 
-    iv("deviceList", _harmonyDevEco_deviceList_parameter_0$schema, deviceListValueSchema,
+    iv("deviceList", null, deviceListValueSchema,
       "Enumerate devices and emulators currently known to the toolchain.",
       "/**\n * Enumerate devices and emulators currently known to the toolchain.\n */"),
 
@@ -444,7 +451,7 @@ export const TYPERT = {
       "Type the given text into the focused input field on the device.",
       "/**\n * Type the given text into the focused input field on the device.\n * @param request - `{ text }` plus optional `device`.\n */"),
 
-    iv("listProjects", _harmonyDevEco_listProjects_parameter_0$schema, projectsSchema,
+    iv("listProjects", null, projectsSchema,
       "List HarmonyOS projects visible to the plugin (empty list v1).",
       "/**\n * List HarmonyOS projects visible to the plugin (empty list v1).\n */"),
   ],
