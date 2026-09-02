@@ -132,6 +132,14 @@ window.__ModuleLoader__.load({
       };
     }
 
+    // ---- apply-scope service bindings ------------------------------------
+    // Components below are defined at FACTORY scope (stable React identity),
+    // so the services they need must also live at factory scope. apply()
+    // assigns them during activation — every render happens after apply()
+    // completes, so the values are always in place by first paint.
+    let remote = null;
+    let settingsScope = null;
+
     // ---- Client Remote namespace self-mount ------------------------------
     const passthrough = () => ({ parse: (v) => v });
     const method = (m, params) => ({
@@ -712,9 +720,12 @@ window.__ModuleLoader__.load({
       const [errorMsg, setErrorMsg] = React.useState("");
 
       // Read the current values out of the bound scope (defined in apply()).
+      // The client-side controller exposes getSnapshot() (NOT get() — that is
+      // the Host-side SettingsScope face); snapshot.value is the resolved
+      // section once status === 'ready'.
       const sync = React.useCallback(() => {
         if (!settingsScope) return;
-        const snap = settingsScope.get();
+        const snap = settingsScope.getSnapshot();
         const value = (snap && snap.value) || {};
         setStudioPath(typeof value.studioPath === "string" ? value.studioPath : "");
         setCltPath(typeof value.cltPath === "string" ? value.cltPath : "");
@@ -883,17 +894,16 @@ window.__ModuleLoader__.load({
       // by $mount; reading the same key on the bundle's own ctx via ctx.get()
       // resolves the namespace object.
       await ctx.remote.$mount(CLIENT_REMOTE);
-      // Bind the remote service into the apply-scope closure so the registered
-      // components (rendered through settings.section and better-sidebar tabs,
-      // where the supplied `ctx` is the host's own — not our bundle's) can
-      // still talk to the Host through the same mounted namespace.
-      const remote = ctx.get("remote.harmonyDevEco");
+      // Bind the services into the FACTORY-scope variables declared above (the
+      // components are defined at factory scope for stable React identity, so
+      // a closure declared inside apply() would never be visible to them).
+      remote = ctx.get("remote.harmonyDevEco");
 
       // Bind the settings namespace scope. The namespace is registered by the
       // Host half under `harmony-deveco`; binding it on this fiber lets the
       // settings card read current values and write back through the official
       // settings transport (no custom write Remote needed).
-      const settingsScope = ctx.settingsScope ? ctx.settingsScope.bind({
+      settingsScope = ctx.settingsScope ? ctx.settingsScope.bind({
         namespace: "harmony-deveco",
       }) : null;
 
@@ -943,13 +953,14 @@ window.__ModuleLoader__.load({
       // Plugin Configuration card: appears inside Settings → 插件 → 配置
       // (the ui-settings-plugins "configurable" tab), keyed by the settings
       // namespace it edits. No extra sidebar/settings nav entry is added.
-      ctx.slots.inject("settings.plugin.item", function* () {
-        yield ctx.slots.register({
-          name: "settings.plugin.item",
-          key: "harmony-deveco",
-          label: () => "HarmonyOS Suite",
-        }, HarmonySettingsCard);
-      });
+      // Registration uses the plain-function form (same as the proven
+      // dsh-git-manager / dsh-memory-manager pattern) — the card's key must
+      // equal the Host settings namespace for the tab to pair them.
+      ctx.slots.inject("settings.plugin.item", () => ctx.slots.register({
+        name: "settings.plugin.item",
+        key: "harmony-deveco",
+        label: () => "HarmonyOS Suite",
+      }, HarmonySettingsCard));
     }
 
     exports.apply = apply;
