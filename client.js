@@ -289,7 +289,7 @@ window.__ModuleLoader__.load({
     // assigns them during activation — every render happens after apply()
     // completes, so the values are always in place by first paint.
     let remote = null;
-    let workspaceFiles = null;
+    let clientCtx = null;
 
     // ---- Client Remote namespace self-mount ------------------------------
     const passthrough = () => ({ parse: (v) => v });
@@ -387,10 +387,40 @@ window.__ModuleLoader__.load({
 
     // Page the official `workspaceFiles` Remote until EOF (pages are
     // line-aligned; `read(sessionId, path, {offset, limit})` returns
-    // `{ text, lines, offset, eof, ... }`). Total cap guards the viewer.
+    // `{ text, lines, offset, eof, bytes?, ... }`). Total cap guards the viewer.
+    //
+    // 实测两个坑（2026-10）：① 官方命名空间由 dsh-api-remotes **异步** `$mount`，
+    // 在 apply() 一次性 `ctx.get` 会竞态缓存 null——必须读取时懒解析
+    // （官方 consumer 的取法是 `ctx.remote.workspaceFiles` 属性）；② 官方 read()
+    // 解析出的是**裸 page 对象**（documentpreview 直接用 page.text），不是
+    // `{ok,value}` 包络——两种形态都要认。
+    function workspaceFilesRemote() {
+      try {
+        if (clientCtx) {
+          const viaCarrier = clientCtx.remote && clientCtx.remote.workspaceFiles;
+          if (viaCarrier && typeof viaCarrier.read === "function") return viaCarrier;
+          const viaService = clientCtx.get("remote.workspaceFiles");
+          if (viaService && typeof viaService.read === "function") return viaService;
+        }
+      } catch (e) { /* fall through */ }
+      return null;
+    }
+
+    // read() 返回值归一化：裸 page 对象 / {ok,value} 包络 都接受。
+    function normalizePage(res) {
+      if (res && typeof res === "object") {
+        if (typeof res.text === "string") return { ok: true, value: res };
+        if (res.ok === true && res.value && typeof res.value.text === "string") return { ok: true, value: res.value };
+        if (res.value && typeof res.value.text === "string") return { ok: true, value: res.value };
+        if (res.ok === false) return res;
+      }
+      return { ok: false, error: (res && res.error) || { code: "read-failed", message: "workspaceFiles.read 返回了无法识别的形态" } };
+    }
+
     const VIEWER_MAX_LINES = 20000;
     async function readWorkspaceFileText(sessionId, path) {
-      if (!workspaceFiles || typeof workspaceFiles.read !== "function") {
+      const workspaceFiles = workspaceFilesRemote();
+      if (!workspaceFiles) {
         throw new Error("workspaceFiles-remote-unavailable");
       }
       const PAGE = 1000;
@@ -398,13 +428,13 @@ window.__ModuleLoader__.load({
       let text = "";
       let size = 0;
       for (;;) {
-        const r = unwrap(await workspaceFiles.read(sessionId, path, { offset: offset, limit: PAGE }));
+        const r = normalizePage(await workspaceFiles.read(sessionId, path, { offset: offset, limit: PAGE }));
         if (!r.ok) throw new Error((r.error && (r.error.message || r.error.code)) || "read-failed");
         const v = r.value || {};
         const pageText = typeof v.text === "string" ? v.text : "";
         const lines = typeof v.lines === "number" ? v.lines : 0;
         text += (text ? "\n" : "") + pageText;
-        if (typeof v.size === "number") size = v.size;
+        if (typeof v.bytes === "number") size = v.bytes;
         if (v.eof || lines === 0) return { content: text, bytes: size, truncated: false };
         if (offset + lines > VIEWER_MAX_LINES) return { content: text, bytes: size, truncated: true };
         offset += lines;
@@ -551,8 +581,19 @@ window.__ModuleLoader__.load({
             if (alive) setState({ loading: false, content: "", bytes: 0, error: "无法解析文件地址：" + (address || "(空)") });
             return;
           }
+          const readOnce = () => readWorkspaceFileText(sessionId, parsed.path);
           try {
-            const out = await readWorkspaceFileText(sessionId, parsed.path);
+            let out;
+            try {
+              out = await readOnce();
+            } catch (e1) {
+              // 官方命名空间异步挂载：首次打开标签页时可能尚未就绪，
+              // 给一次 1.2s 后重试再报错。
+              if (!/workspaceFiles-remote-unavailable/.test(String((e1 && e1.message) || ""))) throw e1;
+              await new Promise((r2) => setTimeout(r2, 1200));
+              if (!alive) return;
+              out = await readOnce();
+            }
             if (alive) setState({ loading: false, content: out.content, bytes: out.bytes, error: "" });
           } catch (e) {
             // Absolute-scope fallback: the Host's own readTextFile Remote.
@@ -567,7 +608,8 @@ window.__ModuleLoader__.load({
                 return;
               } catch (e2) { /* fall through */ }
             }
-            if (alive) setState({ loading: false, content: "", bytes: 0, error: e instanceof Error ? e.message : String(e) });
+            const msg = e instanceof Error ? e.message : String(e);
+            if (alive) setState({ loading: false, content: "", bytes: 0, error: /workspaceFiles-remote-unavailable/.test(msg) ? "文件服务（remote.workspaceFiles）未就绪，请稍后重开此标签页" : msg });
           }
         })();
         return () => { alive = false; };
@@ -1931,15 +1973,11 @@ window.__ModuleLoader__.load({
       // components are defined at factory scope for stable React identity, so
       // a closure declared inside apply() would never be visible to them).
       remote = ctx.get("remote.harmonyDevEco");
-      // The official workspace-files Remote (mounted by dsh-api-remotes) pages
-      // UTF-8 file content for the .ets viewer. Guarded: older/cut-down shells
-      // may not mount it — the viewer then falls back to the Host readTextFile
-      // Remote for absolute paths.
-      try {
-        workspaceFiles = ctx.get("remote.workspaceFiles") || null;
-      } catch (e) {
-        workspaceFiles = null;
-      }
+      // The official workspace-files Remote (mounted asynchronously by
+      // dsh-api-remotes) pages UTF-8 content for the .ets viewer. Capture the
+      // ctx and resolve the namespace LAZILY at read time (workspaceFilesRemote)
+      // — a one-shot ctx.get() here races the official $mount and caches null.
+      clientCtx = ctx;
 
       const styleTag = document.createElement("style");
       styleTag.textContent = CSS;
