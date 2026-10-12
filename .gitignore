@@ -2,3 +2,18 @@ node_modules/
 .npm-cache/
 *.log
 .DS_Store
+.env
+.env.local
+.idea/
+.vscode/
+*.tgz
+dist/
+package-lock.json
+
+# 调试/探测残留
+tmp-*.mjs
+tmp-*.json
+tmp-*.log
+insp*.txt
+parent-detail.txt
+t9.json
