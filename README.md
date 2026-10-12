@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/DSH-Plugin-4D6BFE?style=flat" alt="DSH plugin">
-  <img src="https://img.shields.io/badge/DSH-%5E0.1.0--rc.7%20%7C%7C%20%5E0.2.0--rc.1-4D6BFE?style=flat" alt="supported DSH versions">
+  <img src="https://img.shields.io/badge/DSH-%5E0.2.0--rc.1-4D6BFE?style=flat" alt="supported DSH versions">
   <a href="https://www.npmjs.com/package/@duke-dsh-plugins/dsh-deveco"><img src="https://img.shields.io/npm/v/@duke-dsh-plugins/dsh-deveco?style=flat" alt="npm version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2EA44F?style=flat" alt="MIT License"></a>
   <img src="https://img.shields.io/badge/Web%20UI-Yes-22C55E?style=flat" alt="Web UI">
@@ -18,7 +18,7 @@
 
 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web UI 打造的 **HarmonyOS 全栈开发套件**插件：HiLog 检查器、Chrome DevTools 风格 ArkUI Inspector（截图点选 + 组件树 + 盒模型声明值 + 自定义组件名）、ArkTS 语法高亮 .ets 查看器、工具链与设备管理，以及对话内 agent 可直接调用的 `harmony_ui_tree` 工具。
 
-> **兼容性**：支持 DSH `^0.1.0-rc.7 || ^0.2.0-rc.1`（`engines.dsh` 与 peerDependencies 同步声明，过兼容性 gate；显式双段预发布范围是 node-semver 放行预发布构建的唯一可靠写法）。发布走 GitHub `v*` 标签 → Actions 自动构建测试 + GitHub Release + npm（`@duke-dsh-plugins` 组织，OIDC Trusted Publishing）。
+> **兼容性**：支持 DSH **`^0.2.0-rc.1`**（0.2.x；本插件深度依赖 0.2.0 API——官方右侧边栏 `sidebarRightTabs`、设置页、agent 工具 `ctx.tools`，**0.1.x 无右侧边栏，不受支持**）。`engines.dsh` 与 peerDependencies 同步声明。发布走 GitHub `v*` 标签 → Actions 自动构建测试 + GitHub Release + npm（`@duke-dsh-plugins` 组织，OIDC Trusted Publishing）。
 
 ## 功能
 

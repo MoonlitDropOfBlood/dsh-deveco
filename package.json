@@ -31,7 +31,7 @@
   "bugs": { "url": "https://github.com/MoonlitDropOfBlood/dsh-deveco/issues" },
   "keywords": ["dsh", "deepseek-harness", "plugin", "harmonyos", "arkts", "deveco", "hilog", "arkui"],
   "engines": {
-    "dsh": "^0.1.0-rc.7 || ^0.2.0-rc.1"
+    "dsh": "^0.2.0-rc.1"
   },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
@@ -41,8 +41,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.7 || ^0.2.0-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7 || ^0.2.0-rc.1"
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.2.0-rc.1"
   },
   "dependencies": {
     "zod": "^4.4.3"

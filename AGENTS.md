@@ -207,7 +207,7 @@ dsh plugin --profile web add .   # 本地安装/重装
 - **颜色一律 dsw token**：禁止硬编码 hex/rgba（亮/暗主题下必有一边翻车）。需要透明色用 `color-mix(in srgb, var(--dsw-...) 15%, transparent)`。
 - **`Component.createElement` 必须 bundle 作用域定义**：内联创建（如 `() => React.createElement(...)` 返回值直接传给 slots.register）会每次 render 重新创建 component identity，导致 React 卸载并重建子树、丢失输入态。
 - **sidebarRightTabs 不可用时跳过 tab/viewer 注册**（graceful degrade）：`ctx.inject(["sidebarRightTabs"], ...)` 回调里 `tabs === undefined` 直接返回；不影响 settings 与 Remote 通信。
-- **兼容性 gate（0.2.0 实测）**：`dsh-app-boot` 的 `evaluatePluginCompatibility` 只检查 peerDependencies 中名字以 `@deepseek-ai/dsh` 开头的条目；`^0.2.0` **不匹配** `0.2.0-rc.2` 这类 prerelease，peers 与 `engines.dsh` 必须写显式双段范围 `^0.1.0-rc.7 || ^0.2.0-rc.1` 且保持同步。不通过则插件在任何代码加载前被静默禁用。
+- **兼容性 gate（0.2.0 实测）**：`dsh-app-boot` 的 `evaluatePluginCompatibility` 只检查 peerDependencies 中名字以 `@deepseek-ai/dsh` 开头的条目；`^0.2.0` **不匹配** `0.2.0-rc.2` 这类 prerelease（node-semver 只放行「同 tuple 且带预发布标签的比较符」匹配预发布版），范围要写 `^0.2.0-rc.1` 这类**预发布起点**形式，peers 与 `engines.dsh` 保持同步。不通过则插件在任何代码加载前被静默禁用。**支持范围只写 `^0.2.0-rc.1`（用户决策）**：本插件深度依赖 0.2.0 API（`sidebarRightTabs` / `settings.section` / `ctx.tools` / workspaceFiles），**0.1.x 连右侧边栏都没有，禁止声称支持**（曾误写 `^0.1.0-rc.7 || ^0.2.0-rc.1` 双段范围被用户纠正）。
 - **codec 双形态（0.2.0 实测）**：TYPERT invocation 的 codec 对象必须同时带 `schema`（≤0.1.5 校验器读）与 `create: () => schema`（≥0.1.7 / 0.2.0 调 `codec.create()`）；只给 `schema` 会在 0.2.0 下挂掉。
 - **`dsh.client.external` 已废弃**：0.2.0 无消费者，package.json 不再声明。
 - **npm 发布必须 `--registry=https://registry.npmjs.org`**（本机默认 registry 被 npmmirror 覆盖）。
