@@ -389,20 +389,49 @@ window.__ModuleLoader__.load({
     // line-aligned; `read(sessionId, path, {offset, limit})` returns
     // `{ text, lines, offset, eof, bytes?, ... }`). Total cap guards the viewer.
     //
-    // 实测两个坑（2026-10）：① 官方命名空间由 dsh-api-remotes **异步** `$mount`，
-    // 在 apply() 一次性 `ctx.get` 会竞态缓存 null——必须读取时懒解析
-    // （官方 consumer 的取法是 `ctx.remote.workspaceFiles` 属性）；② 官方 read()
-    // 解析出的是**裸 page 对象**（documentpreview 直接用 page.text），不是
-    // `{ok,value}` 包络——两种形态都要认。
+    // 实测三个坑（2026-10）：① 官方命名空间由 dsh-api-remotes **异步** `$mount`，
+    // 在 apply() 一次性 `ctx.get` 会竞态缓存 null——必须读取时懒解析 + 用
+    // ctx.inject(["remote.workspaceFiles"]) 挂起等待（运行时的 blessed 机制，
+    // 官方 consumer 就是靠 inject 挂起的）；② 官方 read() 解析出的是**裸 page
+    // 对象**（documentpreview 直接用 page.text），不是 `{ok,value}` 包络——两种
+    // 形态都要认；③ 命名空间对象的 read 可能是 accessor（取 typeof 会 throw），
+    // 用 `"read" in ns` 判存在、try/catch 记探针，报错时带诊断信息。
+    let parkedWorkspaceFiles = null;
+    const wsProbe = { notes: [], keys: "" };
     function workspaceFilesRemote() {
+      const inspect = (label, ns) => {
+        if (!ns || typeof ns !== "object") { wsProbe.notes.push(label + ":∅"); return null; }
+        try {
+          if (!("read" in ns)) { wsProbe.notes.push(label + ":no-read"); return null; }
+          const fn = ns.read;
+          if (typeof fn !== "function") { wsProbe.notes.push(label + ":read-" + typeof fn); return null; }
+          wsProbe.notes.push(label + ":ok");
+          return ns;
+        } catch (e) {
+          wsProbe.notes.push(label + ":throw-" + String((e && e.message) || "").slice(0, 30));
+          return null;
+        }
+      };
+      if (parkedWorkspaceFiles) {
+        const ns = inspect("parked", parkedWorkspaceFiles);
+        if (ns) return ns;
+      }
       try {
         if (clientCtx) {
-          const viaCarrier = clientCtx.remote && clientCtx.remote.workspaceFiles;
-          if (viaCarrier && typeof viaCarrier.read === "function") return viaCarrier;
-          const viaService = clientCtx.get("remote.workspaceFiles");
-          if (viaService && typeof viaService.read === "function") return viaService;
+          const carrier = clientCtx.remote || (typeof clientCtx.get === "function" ? clientCtx.get("remote") : null);
+          if (carrier && !wsProbe.keys) {
+            try { wsProbe.keys = Object.keys(carrier).filter((k) => typeof k === "string").slice(0, 12).join(","); } catch (e) { /* */ }
+          }
+          const viaProp = inspect("carrier", carrier && carrier.workspaceFiles);
+          if (viaProp) return viaProp;
+          const viaGet = inspect("get", typeof clientCtx.get === "function" ? clientCtx.get("remote.workspaceFiles") : null);
+          if (viaGet) return viaGet;
+        } else {
+          wsProbe.notes.push("ctx:∅");
         }
-      } catch (e) { /* fall through */ }
+      } catch (e) {
+        wsProbe.notes.push("probe-throw-" + String((e && e.message) || "").slice(0, 30));
+      }
       return null;
     }
 
@@ -421,7 +450,7 @@ window.__ModuleLoader__.load({
     async function readWorkspaceFileText(sessionId, path) {
       const workspaceFiles = workspaceFilesRemote();
       if (!workspaceFiles) {
-        throw new Error("workspaceFiles-remote-unavailable");
+        throw new Error("workspaceFiles-remote-unavailable [" + wsProbe.notes.slice(-6).join(" ") + (wsProbe.keys ? " keys=" + wsProbe.keys : "") + "]");
       }
       const PAGE = 1000;
       let offset = 1;
@@ -584,15 +613,16 @@ window.__ModuleLoader__.load({
           const readOnce = () => readWorkspaceFileText(sessionId, parsed.path);
           try {
             let out;
-            try {
-              out = await readOnce();
-            } catch (e1) {
-              // 官方命名空间异步挂载：首次打开标签页时可能尚未就绪，
-              // 给一次 1.2s 后重试再报错。
-              if (!/workspaceFiles-remote-unavailable/.test(String((e1 && e1.message) || ""))) throw e1;
-              await new Promise((r2) => setTimeout(r2, 1200));
-              if (!alive) return;
-              out = await readOnce();
+            for (let attempt = 0; ; attempt++) {
+              try {
+                out = await readOnce();
+                break;
+              } catch (e1) {
+                // 官方命名空间异步挂载：给挂起等待/重试留足窗口（3 次 × 2s）。
+                if (attempt >= 2 || !/workspaceFiles-remote-unavailable/.test(String((e1 && e1.message) || ""))) throw e1;
+                await new Promise((r2) => setTimeout(r2, 2000));
+                if (!alive) return;
+              }
             }
             if (alive) setState({ loading: false, content: out.content, bytes: out.bytes, error: "" });
           } catch (e) {
@@ -609,7 +639,7 @@ window.__ModuleLoader__.load({
               } catch (e2) { /* fall through */ }
             }
             const msg = e instanceof Error ? e.message : String(e);
-            if (alive) setState({ loading: false, content: "", bytes: 0, error: /workspaceFiles-remote-unavailable/.test(msg) ? "文件服务（remote.workspaceFiles）未就绪，请稍后重开此标签页" : msg });
+            if (alive) setState({ loading: false, content: "", bytes: 0, error: /workspaceFiles-remote-unavailable/.test(msg) ? "文件服务（remote.workspaceFiles）未就绪，请稍后重开此标签页 —— " + msg : msg });
           }
         })();
         return () => { alive = false; };
@@ -1978,6 +2008,17 @@ window.__ModuleLoader__.load({
       // ctx and resolve the namespace LAZILY at read time (workspaceFilesRemote)
       // — a one-shot ctx.get() here races the official $mount and caches null.
       clientCtx = ctx;
+      // 挂起等待官方命名空间（blessed 机制：服务出现时回调；未出现则不阻塞）。
+      try {
+        if (typeof ctx.inject === "function") {
+          ctx.inject(["remote.workspaceFiles"], (injected) => {
+            try {
+              const ns = injected.get ? injected.get("remote.workspaceFiles") : null;
+              if (ns) parkedWorkspaceFiles = ns;
+            } catch (e) { /* 读取时再兜底 */ }
+          });
+        }
+      } catch (e) { /* 读取时懒解析兜底 */ }
 
       const styleTag = document.createElement("style");
       styleTag.textContent = CSS;
