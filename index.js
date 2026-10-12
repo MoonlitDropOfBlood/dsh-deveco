@@ -244,7 +244,203 @@ function parseDeviceList(stdout) {
  * involved (DSH 0.2.0 removed the `settingsScope` client API).
  */
 
+/** 选一个本机空闲端口（fport 的 tcp 端口侧）。 */
+function pickFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const port = srv.address().port;
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
+/**
+ * 连应用调试 socket，按 DevEco 的握手顺序请求组件树，resolve 到 `{"type":"root"}` 回包。
+ *
+ * **必须用裸 socket + Java-WebSocket 风格极简握手**（实测，2026-10）：应用侧
+ * inspector 服务（ets_runtime ConnectServer/HttpHandShake）是手写的极简 HTTP
+ * 解析器，Node 自带 WebSocket 的握手头（permessage-deflate 扩展等）会被判
+ * 「HTTP upgrade parameters failure」秒拒——hilog 实证。帧编解码见
+ * harmony-device.mjs 的 encodeWsClientTextFrame / decodeWsServerFrames。
+ */
+function devEcoWsRequestTree(port, timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let stage = "handshake"
+    let buf = Buffer.alloc(0)
+    const host = `127.0.0.1:${port}`
+    const sock = net.connect({ host: "127.0.0.1", port }, () => {
+      sock.write(buildDevEcoWsHandshake(host, randomBytes(16).toString("base64")))
+    })
+    const settle = (fn, v) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { sock.destroy(); } catch (_) {}
+      fn(v)
+    }
+    const timer = setTimeout(() => {
+      settle(reject, new Error(stage === "handshake"
+        ? "WebSocket 握手超时（应用侧未响应升级请求）"
+        : "等待组件树超时（应用未回 type:root）"))
+    }, timeoutMs)
+    const fail = (msg) => settle(reject, new Error(msg))
+    sock.on("error", (e) => fail(`调试 socket 连接失败：${e && e.message ? e.message : e}`))
+    sock.on("close", () => { if (!settled) fail("调试 socket 已关闭") })
+    sock.on("data", (d) => {
+      buf = Buffer.concat([buf, d])
+      if (stage === "handshake") {
+        const text = buf.toString("latin1")
+        if (!text.includes("\r\n\r\n")) return
+        if (!isWsHandshakeAccepted(text)) {
+          fail("WebSocket 握手被拒（HTTP upgrade parameters failure）——应用侧只接受极简握手头")
+          return
+        }
+        stage = "frames"
+        buf = Buffer.from(text.split("\r\n\r\n").slice(1).join("\r\n\r\n"), "latin1")
+        // DevEco 的消息顺序：connected → inspectorAbilities → tree
+        // （应用握手成功后会立刻主动推 addInstance，root 也会自动跟来）
+        sock.write(encodeWsClientTextFrame(DEV_ECO_WS_MESSAGES.connected, randomBytes(4)))
+        setTimeout(() => { try { sock.write(encodeWsClientTextFrame(DEV_ECO_WS_MESSAGES.inspectorAbilities, randomBytes(4))); } catch (_) {} }, 150)
+        setTimeout(() => { try { sock.write(encodeWsClientTextFrame(DEV_ECO_WS_MESSAGES.tree, randomBytes(4))); } catch (_) {} }, 350)
+      }
+      const { texts, pings, closed, rest } = decodeWsServerFrames(buf)
+      buf = rest
+      for (const p of pings) {
+        try { sock.write(encodeWsPongFrame(p, randomBytes(4))); } catch (_) {}
+      }
+      for (const t of texts) {
+        let obj = null
+        try { obj = JSON.parse(t); } catch (_) { continue }
+        if (obj && obj.type === "root") {
+          settle(resolve, obj)
+          return
+        }
+      }
+      if (closed) fail("应用关闭了调试连接")
+    })
+  })
+}
+
+/**
+ * Agent 工具面：`harmony_ui_tree` —— DevEco 开发调试源取树，注册进 DSH 的
+ * `ctx.tools`（`@deepseek-ai/dsh-tools` 的 `defineTool`），让对话里的 agent
+ * 直接调用。canonical 输出是紧凑节点数组（`devEcoNodeSummary`），`render`
+ * 投影为缩进树文本（或 json 格式时输出完整 JSON）。
+ *
+ * @param {Function} defineTool dsh-tools 的 defineTool（运行期动态导入）
+ * @param {HarmonyDevEcoService} service Host 服务实例（复用 _fetchDevEcoTree）
+ */
+function buildHarmonyUiTreeTool (defineTool, service) {
+  const sidesSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      top: { type: "number", required: true },
+      right: { type: "number", required: true },
+      bottom: { type: "number", required: true },
+      left: { type: "number", required: true },
+    },
+  };
+  const boundsSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      left: { type: "number", required: true },
+      top: { type: "number", required: true },
+      right: { type: "number", required: true },
+      bottom: { type: "number", required: true },
+      width: { type: "number", required: true },
+      height: { type: "number", required: true },
+    },
+  };
+  const nodeSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      index: { type: "integer", required: true },
+      depth: { type: "integer", required: true },
+      parentIndex: { type: "integer", required: true },
+      name: { type: "string", required: true, description: "展示名：组件名 → 开发者 .id() → 真实类型（沿用 UI 标签规则）" },
+      componentName: { type: "string", required: true },
+      className: { type: "string", required: true },
+      kind: { type: "string", enum: ["custom", "build-in"], required: true },
+      text: { type: "string", required: true },
+      devId: { type: "string", required: true },
+      accessibilityId: { type: "string", required: true },
+      bounds: { ...boundsSchema, required: true },
+      visible: { type: "boolean", required: true },
+      enabled: { type: "boolean", required: true },
+      clickable: { type: "boolean", required: true },
+      scrollable: { type: "boolean", required: true },
+      padding: sidesSchema,
+      margin: sidesSchema,
+      borderWidth: { type: "number" },
+      borderRadius: { type: "number" },
+      borderColor: { type: "string" },
+      attrs: { type: "json", description: "include_attrs 时附带的全部原始属性" },
+    },
+  };
+  return defineTool({
+    name: "harmony_ui_tree",
+    description: "Fetch the ArkUI component tree of a HarmonyOS app on a connected device/emulator through the DevEco development-debug channel — the same data DevEco Studio's ArkUI Inspector shows, including component/Builder names (viewTag) and declared padding/margin/border values (uitest dumps lack these). Requires a debuggable app; the app-side inspector socket is single-client, so close DevEco Studio's ArkUI Inspector panel first if it is open (the error message lists all prerequisites). By default targets the foreground window's app. Returns an indented tree of nodes with bounds, text and box-model declarations.",
+    parameters: {
+      device: { type: "string", description: "Device/emulator serial as listed by hdc targets (e.g. 127.0.0.1:5555). Omit for the default target." },
+      pid: { type: "integer", description: "Target app process id. Omit to use the foreground window's app." },
+      package_name: { type: "string", description: "Target app package name (e.g. com.example.app). Derived from /proc/<pid>/cmdline when omitted." },
+      format: { type: "string", enum: ["tree", "json"], default: "tree", description: "tree = compact indented text lines (default); json = the full node objects as JSON." },
+      include_attrs: { type: "boolean", description: "Include every node's full raw attribute map (very verbose; off by default)." },
+      max_nodes: { type: "integer", description: "Maximum number of nodes returned (default 400, capped at 2000). Extra nodes are dropped and truncation is flagged." },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          source: { type: "string", const: "deveco", required: true },
+          pid: { type: "integer", required: true },
+          packageName: { type: "string", required: true },
+          nodeCount: { type: "integer", required: true, description: "树中全部节点数（截断前）" },
+          truncated: { type: "boolean", required: true },
+          nodes: { type: "array", items: nodeSchema, required: true },
+        },
+      },
+      render (args, value) {
+        if (args && args.format === "json") {
+          return [{ type: "text", text: JSON.stringify(value, null, 1) }];
+        }
+        const head = `ArkUI 组件树（DevEco 调试源） pid=${value.pid} ${value.packageName} 共 ${value.nodeCount} 节点`
+          + (value.truncated ? `（已截断至 ${value.nodes.length}，加 max_nodes 看更多）` : "");
+        return [{ type: "text", text: [head, ...devEcoTreeLines(value.nodes)].join("\n") }];
+      },
+    },
+    async execute (args) {
+      const res = await service._fetchDevEcoTree({
+        device: args.device,
+        pid: args.pid,
+        packageName: args.package_name,
+      });
+      if (!res.ok) {
+        throw new Error((res.error && (res.error.message || res.error.code)) || "harmony_ui_tree failed");
+      }
+      const all = Array.isArray(res.value.nodes) ? res.value.nodes : [];
+      let cap = Number.isFinite(args.max_nodes) ? Math.floor(args.max_nodes) : 400;
+      cap = Math.max(1, Math.min(cap, 2000));
+      const nodes = all.slice(0, cap).map((n) => devEcoNodeSummary(n, args.include_attrs === true)).filter(Boolean);
+      return {
+        source: "deveco",
+        pid: res.value.pid,
+        packageName: res.value.packageName,
+        nodeCount: all.length,
+        truncated: all.length > nodes.length,
+        nodes,
+      };
+    },
+    isConcurrencySafe () { return true; },  // 只读、无共享状态，可并行
+  });
+}
 
 export class HarmonyDevEcoService extends TypertRemoteService {
   /**
@@ -286,6 +482,7 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     markRemoteMethod(this, "hilogStreamRead", "hilogStreamRead");
     markRemoteMethod(this, "hilogStreamStop", "hilogStreamStop");
     markRemoteMethod(this, "uiDump", "uiDump");
+    markRemoteMethod(this, "uiDevEcoTree", "uiDevEcoTree");
     markRemoteMethod(this, "uiWindowList", "uiWindowList");
     markRemoteMethod(this, "uiScreenshot", "uiScreenshot");
     markRemoteMethod(this, "uiTap", "uiTap");
@@ -294,6 +491,27 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     markRemoteMethod(this, "listProjects", "listProjects");
     markRemoteMethod(this, "readTextFile", "readTextFile");
 
+    // Agent 工具面：把 DevEco 调试源取树注册为 `harmony_ui_tree` 工具，
+    // 让对话里的 agent 可直接调用（`ctx.tools`，dsh-tools 的 defineTool）。
+    // 任何一环不可用都静默跳过——Remote/UI 面不受影响。
+    try {
+      const { defineTool } = await import("@deepseek-ai/dsh-tools");
+      if (typeof defineTool === "function" && typeof this._ctx.inject === "function") {
+        this._ctx.inject(["tools"], (injected) => {
+          const tools = injected.get("tools");
+          if (!tools || typeof tools.register !== "function") return;
+          let off;
+          try {
+            off = tools.register(buildHarmonyUiTreeTool(defineTool, this));
+          } catch (_) {
+            return; // 工具名冲突等：不阻断 Remote 面
+          }
+          if (typeof off === "function" && typeof this._ctx.effect === "function") {
+            this._ctx.effect(() => off); // plugin dispose 时注销
+          }
+        });
+      }
+    } catch (_) { /* dsh-tools 不可用：仅 UI/Remote 面 */ }
 
     // Ensure the data directory exists, load the persisted config, then warm
     // the discovery cache.
@@ -834,6 +1052,93 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       windows = [];
     }
     return ok({ windows });
+  }
+
+  /**
+   * **DevEco 开发调试源**：走应用侧 inspector socket 拿真正的组件树
+   * （反编译 `layout-inspector-server` 还原的链路）：
+   * `hdc fport tcp:<本机> ark:<pid>@<pkg>` → `ws://127.0.0.1:<本机>`（裸 socket
+   * 极简握手）→ `{"type":"connected"}` → `{"type":"inspectorAbilities"}` →
+   * `{"type":"tree"}` → 收 `{"type":"root"}` → `parseDevEcoTree`。
+   *
+   * 与 uitest dump 的关键差别：这条源**能拿到 `$attrs.margin/padding/border`
+   * 声明值**和 **`viewTag`/`$attrs.label` 组件/Builder 名**（`$type:"JsView"` /
+   * `type:"custom"|"build-in"` 还能权威判定自定义组件），dump 里都没有。
+   *
+   * 前置条件：应用为 debug 包且已 `aa attach -b <pkg>`（本方法自动执行）；
+   * DevEco Studio 的 Inspector 面板开着会占用应用侧唯一连接，需先关掉。
+   *
+   * 返回 `{ nodes, source, pid, packageName }`（rich，供 Remote 与 agent 工具共用）。
+   */
+  async _fetchDevEcoTree(request) {
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return err("no-hdc", "未找到 hdc 可执行文件（DevEco 开发调试源依赖 SDK 自带的 hdc）");
+    const device = request && typeof request.device === "string" && request.device ? request.device : undefined;
+    const targs = device ? ["-t", device] : [];
+
+    // 1) 解析 pid + 包名（DevEco 从 hdclib 的 DebugClient 拿；我们用 pid + /proc/<pid>/cmdline）
+    let pid = request && request.pid ? String(request.pid) : "";
+    let packageName = request && typeof request.packageName === "string" && request.packageName ? request.packageName : "";
+    if (!pid) {
+      const r = await this.uiWindowList({ device, all: true });
+      const wins = (r.ok && r.value && Array.isArray(r.value.windows)) ? r.value.windows : [];
+      const w = wins.find((x) => x.focused) || wins[0];
+      if (!w || !w.pid) return err("no-pid", "找不到前台窗口的 pid（请先打开要调试的应用）");
+      pid = String(w.pid);
+    }
+    if (!packageName) {
+      const out = await execHdc(hdc, [...targs, "shell", `cat /proc/${pid}/cmdline`], { timeout: 10000 }).catch(() => null);
+      packageName = String((out && `${out.stdout || ""}`) || "").replace(/\0/g, "").trim().split(/\r?\n/)[0].trim();
+    }
+    if (!packageName) return err("no-package", `无法从 /proc/${pid}/cmdline 解析应用包名`);
+
+    // 2) `aa attach` —— DevEco 每次连 inspector 前都执行（反编译 closeAppfreeze），
+    //    把应用绑定到调试模式并武装应用侧 inspector 服务。已绑定时幂等（不会重启应用）。
+    await execHdc(hdc, [...targs, "shell", `aa attach -b ${packageName}`], { timeout: 10000 })
+      .catch(() => { /* 某些版本不支持时忽略，靠后面的错误信息兜底 */ });
+
+    // 3) 本机空闲端口 + 建立端口转发（新协议 ark:<pid>@<pkg>，失败退回旧协议 localabstract:）
+    const localPort = await pickFreePort();
+    const attempts = [
+      { args: buildArkForwardArgs(localPort, pid, packageName), node: `ark:${pid}@${packageName}` },
+      { args: buildLocalAbstractForwardArgs(localPort, pid, "", packageName), node: `localabstract:${pid}${packageName}` },
+    ];
+    let forwarded = null;
+    for (const a of attempts) {
+      const r = await execHdc(hdc, [...targs, ...a.args], { timeout: 15000 }).catch((e) => ({ stdout: "", stderr: e.message }));
+      const text = `${(r && r.stdout) || ""}${(r && r.stderr) || ""}`;
+      if (/forwardport result:\s*ok|^\s*ok\s*$/i.test(text.trim())) { forwarded = { ...a }; break; }
+    }
+    if (!forwarded) {
+      return err("forward-failed", `hdc fport 建立转发失败（试过 ark:${pid}@${packageName} 与 localabstract: 变体）`);
+    }
+
+    // 3) 连 WS → 收 root → 解析；无论成败都解除转发
+    try {
+      const root = await devEcoWsRequestTree(localPort);
+      const nodes = parseDevEcoTree(root);
+      if (!nodes.length) return err("empty-tree", "应用回了 root 但解析不到节点");
+      return ok({ nodes, source: "deveco", pid: Number(pid) || 0, packageName });
+    } catch (e) {
+      return err(
+        "no-inspector-socket",
+        `连不上应用的 ArkUI 调试 socket（${forwarded.node}）：${e.message}。`
+        + ` 前置条件：① 应用是 debug 包（或 debuggable）；② 已执行 aa attach -b ${packageName}（本方法已自动执行）；`
+        + ` ③ 若 DevEco Studio 的 ArkUI Inspector 面板开着，请先关掉它——应用侧 socket 单客户端，会被 IDE 占用。`
+      );
+    } finally {
+      await execHdc(hdc, [...targs, ...buildForwardRemoveArgs(localPort, forwarded.node)], { timeout: 10000 }).catch(() => {});
+    }
+  }
+
+  /**
+   * Remote 面（`uiDevEcoTree`）：严格按 TYPERT 契约返回 `{ nodes, source }`。
+   * agent 工具面走 `_fetchDevEcoTree` 拿 rich 结果（含 pid/packageName）。
+   */
+  async uiDevEcoTree(request) {
+    const r = await this._fetchDevEcoTree(request);
+    if (!r.ok) return r;
+    return ok({ nodes: r.value.nodes, source: r.value.source });
   }
 
   async uiScreenshot(request) {
