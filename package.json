@@ -1,7 +1,7 @@
 {
   "name": "@duke-dsh-plugins/dsh-deveco",
-  "version": "0.1.0",
-  "description": "DSH 正式 bundle 插件：在 better-sidebar 注册「HiLog 检查器」与「ArkUI Inspector」两个独立 Tab（HiLog 实时流 + 过滤；ArkUI UI 树 dump / 截图 / tap / swipe / text），并提供 .ets 文件查看器（ArkTS 语法高亮）；路径配置走 DSH 原生「设置 → 插件 → 配置」卡片（DevEco Studio / HarmonyOS Command Line Tools，含三平台自发现、两者互斥、CLT 最低 26.0.0 校验；若 PATH 存在 devecocli 则优先使用，忽略设置路径）。",
+  "version": "0.2.0",
+  "description": "DSH 正式 bundle 插件：在官方右侧边栏（sidebarRightTabs）注册「HiLog 检查器」与「ArkUI Inspector」两个独立页面 Tab（HiLog 实时流 + 过滤；ArkUI UI 树 dump / 截图 / tap / swipe / text），并提供 .ets 文件查看器（ArkTS 语法高亮，内容经官方 remote.workspaceFiles 分页读取）；路径配置为设置根区的「HarmonyOS Suite」页面（settings.section；DevEco Studio / HarmonyOS Command Line Tools，含三平台自发现、两者互斥、CLT 最低 26.0.0 校验；若 PATH 存在 devecocli 则优先使用，忽略配置路径）。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -30,31 +30,28 @@
   "homepage": "https://github.com/MoonlitDropOfBlood/dsh-deveco",
   "bugs": { "url": "https://github.com/MoonlitDropOfBlood/dsh-deveco/issues" },
   "keywords": ["dsh", "deepseek-harness", "plugin", "harmonyos", "arkts", "deveco", "hilog", "arkui"],
+  "engines": {
+    "dsh": "^0.1.0-rc.7 || ^0.2.0-rc.1"
+  },
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
-      "platform": "web",
-      "external": [
-        "dsh-better-sidebar",
-        "@deepseek-ai/dsh-client-ui-settings"
-      ]
+      "platform": "web"
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-invariants": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7",
-    "@deepseek-ai/schemastery": "^3.18.1"
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.7 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.7 || ^0.2.0-rc.1"
   },
   "dependencies": {
     "zod": "^4.4.3"
   },
   "pnpm": {
     "overrides": {
-      "@deepseek-ai/cordis": "4.0.1",
-      "@deepseek-ai/dsh-invariants": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.7"
+      "@deepseek-ai/cordis": "4.0.4",
+      "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+      "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2"
     }
   },
   "scripts": {
