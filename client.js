@@ -248,7 +248,7 @@ window.__ModuleLoader__.load({
 .ark-line:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.04))}
 .ark-lineno{flex:none;width:52px;color:var(--dsw-alias-label-tertiary);text-align:right;padding-right:14px;user-select:none;font-size:11px}
 .ark-code{flex:1;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word;min-width:0}
-.ark-kw{color:var(--shiki-token-keyword,#c586c0);font-weight:600}.ark-str{color:var(--shiki-token-string,#ce9178)}.ark-num{color:var(--shiki-token-constant,#b5cea8)}.ark-com{color:var(--shiki-token-comment,#6a9955);font-style:italic}.ark-deco{color:var(--shiki-token-function,#dcdcaa)}.ark-type{color:var(--shiki-token-link,#4ec9b0)}
+.ark-kw{color:var(--shiki-token-keyword,#c586c0);font-weight:600}.ark-str{color:var(--shiki-token-string,#ce9178)}.ark-num{color:var(--shiki-token-constant,#b5cea8)}.ark-com{color:var(--shiki-token-comment,#6a9955);font-style:italic}.ark-deco{color:var(--shiki-token-function,#dcdcaa)}.ark-fn{color:var(--shiki-token-function,#dcdcaa)}.ark-type{color:var(--shiki-token-link,#4ec9b0)}
 .ark-meta{color:var(--dsw-alias-label-secondary);font-size:11px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
 `;
 
@@ -478,9 +478,13 @@ window.__ModuleLoader__.load({
       "component", "struct", "build", "function", "const", "let", "var", "if", "else", "for",
       "while", "do", "return", "import", "export", "from", "as", "class", "extends", "implements",
       "interface", "type", "enum", "public", "private", "protected", "static", "readonly",
-      "async", "await", "this", "super", "new", "throw", "try", "catch", "finally", "void",
+      "async", "await", "this", "super", "new", "throw", "try", "catch", "finally",
       "true", "false", "null", "undefined", "in", "of", "instanceof", "typeof", "switch",
       "case", "break", "continue", "default", "yield", "delete",
+    ]);
+    // 基本类型注解按类型色显示（DevEco 同款）；大写 Promise/Array 等直接走 type
+    const ARKTS_PRIM_TYPES = new Set([
+      "string", "number", "boolean", "void", "symbol", "bigint", "object", "never", "unknown", "any",
     ]);
 
     // 全文扫描 → 每行一个 token 数组（{t:'kw'|'str'|'num'|'com'|'deco'|'type'|'plain', v}）。
@@ -552,8 +556,15 @@ window.__ModuleLoader__.load({
           let w = "";
           while (i < n && isId(content[i])) w += content[i++];
           if (ARKTS_KEYWORDS.has(w)) line.push({ t: "kw", v: w });
+          else if (ARKTS_PRIM_TYPES.has(w)) line.push({ t: "type", v: w });
           else if (w[0] >= "A" && w[0] <= "Z") line.push({ t: "type", v: w }); // 类型与声明式 UI 组件名
-          else line.push({ t: "plain", v: w });
+          else {
+            // 小写标识符紧邻 `(` → 方法声明/调用（DevEco 按函数色显示方法名）
+            let j = i;
+            while (j < n && (content[j] === " " || content[j] === "\t")) j++;
+            if (content[j] === "(") line.push({ t: "fn", v: w });
+            else line.push({ t: "plain", v: w });
+          }
           continue;
         }
         buf += c; i++;
