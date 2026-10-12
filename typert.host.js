@@ -167,14 +167,77 @@ const boundsSchema = z
   })
   .readonly();
 
+const boxSidesSchema = z
+  .object({
+    top: z.number().readonly(),
+    right: z.number().readonly(),
+    bottom: z.number().readonly(),
+    left: z.number().readonly(),
+  })
+  .readonly();
+
 const uiNodeSchema = z
   .object({
     index: z.number().readonly(),
+    depth: z.number().readonly(),
+    parentIndex: z.number().readonly(),
+    windowId: z.number().readonly(),
     text: z.string().readonly(),
     resourceId: z.string().readonly(),
     className: z.string().readonly(),
+    // Visible rect (clipped by scrolling parents / occluded by other windows).
     bounds: boundsSchema,
     boundsStr: z.string().readonly(),
+    // True layout rect — drives the highlight overlay and the box model.
+    origBounds: boundsSchema.optional(),
+    origBoundsStr: z.string().optional(),
+    // Measured content region (union of children's rects) — the only
+    // box-model geometry the device dump actually provides.
+    contentBox: boundsSchema.optional(),
+    // @Component struct instance name when this node is one (else "").
+    componentName: z.string().optional(),
+    // Nearest ancestor that is a custom component — labels the anonymous
+    // `__Common__` placeholders the toolchain emits for component internals.
+    ownerComponent: z.string().optional(),
+    // Developer-assigned `.id('…')` — empty when unset, never an accessibilityId.
+    devId: z.string().optional(),
+    key: z.string().optional(),
+    accessibilityId: z.string().optional(),
+    originalText: z.string().optional(),
+    bundleName: z.string().optional(),
+    abilityName: z.string().optional(),
+    pagePath: z.string().optional(),
+    focused: z.boolean().optional(),
+    selected: z.boolean().optional(),
+    checked: z.boolean().optional(),
+    checkable: z.boolean().optional(),
+    clipped: z.boolean().optional(),
+    longClickable: z.boolean().optional(),
+    scrollable: z.boolean().optional(),
+    zIndex: z.number().optional(),
+    hitTestBehavior: z.string().optional(),
+    hierarchy: z.string().optional(),
+    hashcode: z.string().optional(),
+    displayId: z.string().optional(),
+    backgroundColor: z.string().optional(),
+    backgroundImage: z.string().optional(),
+    blur: z.string().optional(),
+    description: z.string().optional(),
+    hint: z.string().optional(),
+    // Every attribute the device reports, verbatim (nothing dropped).
+    rawAttrs: z.record(z.string(), z.string()).optional(),
+    // Box-model layers stay undefined when the device dump does not report them
+    // (HarmonyOS uitest exposes no padding/margin/border data at all).
+    padding: boxSidesSchema.optional(),
+    margin: boxSidesSchema.optional(),
+    borderWidth: z.number().optional(),
+    borderRadius: z.number().optional(),
+    borderColor: z.string().optional(),
+    opacity: z.number().readonly(),
+    visible: z.boolean().readonly(),
+    enabled: z.boolean().readonly(),
+    clickable: z.boolean().readonly(),
+    attrs: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).readonly(),
   })
   .readonly();
 
@@ -184,11 +247,38 @@ const uiDumpSchema = z
   })
   .readonly();
 
+const uiDevEcoTreeSchema = z
+  .object({
+    nodes: z.array(uiNodeSchema).readonly(),
+    source: z.string().readonly(),
+  })
+  .readonly();
+
+const uiWindowSchema = z
+  .object({
+    id: z.number().readonly(),
+    name: z.string().readonly(),
+    pid: z.number().readonly(),
+    displayId: z.number().readonly(),
+    focused: z.boolean().readonly(),
+  })
+  .readonly();
+
+const uiWindowListSchema = z
+  .object({
+    windows: z.array(uiWindowSchema).readonly(),
+  })
+  .readonly();
+
 const uiScreenshotSchema = z
   .object({
     savedTo: z.string().readonly(),
     stdout: z.string().readonly(),
     stderr: z.string().readonly(),
+    dataUrl: z.string().readonly(),
+    imageWidth: z.number().readonly(),
+    imageHeight: z.number().readonly(),
+    byteSize: z.number().readonly(),
   })
   .readonly();
 
@@ -237,6 +327,31 @@ const _harmonyDevEco_deviceInfo_parameter_0$schema = z
   })
   .readonly();
 
+const _harmonyDevEco_deviceIpConn_parameter_0$schema = z
+  .object({
+    ip: z.string().readonly(),
+    port: z.number().readonly(),
+  })
+  .readonly();
+
+const ipConnectValueSchema = z
+  .object({
+    address: z.string().readonly(),
+    connected: z.boolean().readonly(),
+    message: z.string().readonly(),
+    hdc: z.string().readonly(),
+  })
+  .readonly();
+
+const ipDisconnectValueSchema = z
+  .object({
+    address: z.string().readonly(),
+    disconnected: z.boolean().readonly(),
+    message: z.string().readonly(),
+    hdc: z.string().readonly(),
+  })
+  .readonly();
+
 const _harmonyDevEco_hilogList_parameter_0$schema = z
   .object({
     device: z.string().optional().readonly(),
@@ -274,6 +389,23 @@ const _harmonyDevEco_hilogStreamStop_parameter_0$schema = z
 const _harmonyDevEco_uiDump_parameter_0$schema = z
   .object({
     device: z.string().optional().readonly(),
+    windowId: z.number().optional().readonly(),
+    allWindows: z.boolean().optional().readonly(),
+  })
+  .readonly();
+
+const _harmonyDevEco_uiDevEcoTree_parameter_0$schema = z
+  .object({
+    device: z.string().optional().readonly(),
+    pid: z.number().optional().readonly(),
+    packageName: z.string().optional().readonly(),
+  })
+  .readonly();
+
+const _harmonyDevEco_uiWindowList_parameter_0$schema = z
+  .object({
+    device: z.string().optional().readonly(),
+    all: z.boolean().optional().readonly(),
   })
   .readonly();
 
@@ -322,9 +454,25 @@ const getConfigValueSchema = z
   })
   .readonly();
 
-const getSettingsNamespaceValueSchema = z
+const setPathValueSchema = z
   .object({
-    namespace: z.string().readonly(),
+    config: configSchema,
+    resolved: resolvedSchema,
+  })
+  .readonly();
+
+const readTextFileValueSchema = z
+  .object({
+    path: z.string().readonly(),
+    content: z.string().readonly(),
+    bytes: z.number().readonly(),
+    truncated: z.boolean().readonly(),
+  })
+  .readonly();
+
+const pathRequestSchema = z
+  .object({
+    path: z.string().readonly(),
   })
   .readonly();
 
@@ -368,7 +516,10 @@ function iv(method, paramSchema, resultValueSchema, summary, jsDoc) {
       codec: {
         mode: "strict",
         typeSymbol: "dsh-deveco#HarmonyDevEco" + method[0].toUpperCase() + method.slice(1) + "Request",
+        // Dual-shape codec (see dsh-memory-manager): <= 0.1.5 validators read
+        // `codec.schema`, >= 0.1.7 (and 0.2.0) call `codec.create()` — carry both.
         schema: paramSchema,
+        create: () => paramSchema,
       },
     },
   ];
@@ -383,6 +534,7 @@ function iv(method, paramSchema, resultValueSchema, summary, jsDoc) {
       mode: "strict",
       typeSymbol: "dsh-deveco#HarmonyDevEco" + method[0].toUpperCase() + method.slice(1) + "Result",
       schema: unionResult(resultValueSchema),
+      create: () => unionResult(resultValueSchema),
     },
     sourceLocation: { file: "index.js", line: 1, column: 1 },
   };
@@ -399,9 +551,17 @@ export const TYPERT = {
       "Read the current toolchain config, the resolved CLI source, and the latest discovery snapshot.",
       "/**\n * Read the current toolchain config, the resolved CLI source, and the latest discovery snapshot.\n */"),
 
-    iv("getSettingsNamespace", null, getSettingsNamespaceValueSchema,
-      "Return the settings namespace key the client card writes through (settings.plugin.item).",
-      "/**\n * Return the settings namespace key the client card writes through.\n * @returns the namespace string the client binds via `ctx.settingsScope.bind({ namespace })`.\n */"),
+    iv("setStudioPath", pathRequestSchema, setPathValueSchema,
+      "Persist the DevEco Studio path (clears cltPath; empty string clears the field).",
+      "/**\n * Persist the DevEco Studio path. Writing Studio clears cltPath (mutual exclusion).\n * @param request - `{ path }` absolute install root, or empty string to clear.\n */"),
+
+    iv("setCltPath", pathRequestSchema, setPathValueSchema,
+      "Persist the HarmonyOS Command Line Tools path (clears studioPath; empty string clears the field).",
+      "/**\n * Persist the HarmonyOS Command Line Tools path. Writing CLT clears studioPath (mutual exclusion).\n * @param request - `{ path }` absolute CLT root, or empty string to clear.\n */"),
+
+    iv("readTextFile", pathRequestSchema, readTextFileValueSchema,
+      "Read a UTF-8 text file from an absolute host path (2 MiB cap) for the .ets sidebar viewer.",
+      "/**\n * Read a UTF-8 text file from an absolute host path for the .ets viewer.\n * @param request - `{ path }` absolute host path.\n * @returns `{ path, content, bytes, truncated }`.\n */"),
 
     iv("rescan", null, rescanValueSchema,
       "Re-run toolchain auto-discovery and persist the result to disk.",
@@ -414,6 +574,14 @@ export const TYPERT = {
     iv("deviceInfo", _harmonyDevEco_deviceInfo_parameter_0$schema, deviceInfoValueSchema,
       "Fetch detailed metadata for a single device.",
       "/**\n * Fetch detailed metadata for a single device.\n * @param request - `{ device }` the device serial / id.\n */"),
+
+    iv("deviceConnectIp", _harmonyDevEco_deviceIpConn_parameter_0$schema, ipConnectValueSchema,
+      "Connect a device over TCP/IP via `hdc tconn <ip>:<port>` (devecocli has no equivalent).",
+      "/**\n * Connect a device over TCP/IP via `hdc tconn <ip>:<port>`.\n * @param request - `{ ip, port }`; port is REQUIRED (hdc has no default) and must match the debug port the device exposes (enable debugging on the device first).\n */"),
+
+    iv("deviceDisconnectIp", _harmonyDevEco_deviceIpConn_parameter_0$schema, ipDisconnectValueSchema,
+      "Disconnect a TCP device target via `hdc tconn <ip>:<port> -remove`.",
+      "/**\n * Disconnect a TCP device target via `hdc tconn <ip>:<port> -remove`.\n * @param request - `{ ip, port }`; port is REQUIRED (hdc has no default).\n */"),
 
     iv("hilogList", _harmonyDevEco_hilogList_parameter_0$schema, hilogListSchema,
       "Read a one-shot snapshot of HiLog lines matching the given filters.",
@@ -432,8 +600,16 @@ export const TYPERT = {
       "/**\n * Stop and dispose a live HiLog stream.\n * @param request - `{ streamId }`.\n */"),
 
     iv("uiDump", _harmonyDevEco_uiDump_parameter_0$schema, uiDumpSchema,
-      "Dump the current UI tree of a device or emulator into a flat node list.",
-      "/**\n * Dump the current UI tree of a device or emulator into a flat node list.\n * @param request - optional `{ device }` filter.\n */"),
+      "Dump the current UI tree of a device or emulator into a flat node list. Pass `windowId` to restrict the dump to one window, or `allWindows` to include every window; each node carries the `windowId` it belongs to.",
+      "/**\n * Dump the current UI tree of a device or emulator into a flat node list.\n * @param request - optional `{ device }` filter, plus `windowId` (single window) or `allWindows` (every window); each node reports its owning `windowId`.\n */"),
+
+    iv("uiDevEcoTree", _harmonyDevEco_uiDevEcoTree_parameter_0$schema, uiDevEcoTreeSchema,
+      "Fetch the component tree through DevEco Studio's own development-debug channel (`hdc fport ark:<pid>@<pkg>` + WebSocket `type:root`). The only source that reports declared padding/margin/border and component/Builder names (`viewTag`). Requires the app to expose its ArkUI inspector socket: debug build, `aa attach` (run automatically), and no DevEco Inspector panel holding the single client slot.",
+      "/**\n * DevEco development-debug tree source.\n * @param request - optional `{ device }`, `pid` (default: focused window's pid), `packageName`.\n * @returns `{ nodes, source: \"deveco\" }` — same node shape as uiDump, plus declared box-model values.\n */"),
+
+    iv("uiWindowList", _harmonyDevEco_uiWindowList_parameter_0$schema, uiWindowListSchema,
+      "List the device's UI windows (id, name, pid, displayId, focused) for the Inspector's window selector.",
+      "/**\n * List the device's UI windows.\n * @param request - optional `{ device }` filter and `all` to include system windows.\n * @returns `{ windows }` — each `{ id, name, pid, displayId, focused }`.\n */"),
 
     iv("uiScreenshot", _harmonyDevEco_uiScreenshot_parameter_0$schema, uiScreenshotSchema,
       "Capture a screenshot to the given host-side path.",
@@ -477,11 +653,27 @@ export const TYPERT = {
           },
           {
             kind: "method",
-            name: "getSettingsNamespace",
-            signature: "@Remote('getSettingsNamespace') async getSettingsNamespace(): Promise<HarmonyDevEcoGetSettingsNamespaceResult>",
-            summary: "Return the settings namespace key the client card writes through.",
+            name: "setStudioPath",
+            signature: "@Remote('setStudioPath') async setStudioPath(request: HarmonyDevEcoPathRequest): Promise<HarmonyDevEcoSetPathResult>",
+            summary: "Persist the DevEco Studio path (clears cltPath).",
             jsDoc:
-              "/**\n * Return the settings namespace key the client card writes through.\n * @returns `{ namespace }` for `ctx.settingsScope.bind({ namespace })`.\n */",
+              "/**\n * Persist the DevEco Studio path. Writing Studio clears cltPath (mutual exclusion).\n * @param request - `{ path }` absolute install root, or empty string to clear.\n */",
+          },
+          {
+            kind: "method",
+            name: "setCltPath",
+            signature: "@Remote('setCltPath') async setCltPath(request: HarmonyDevEcoPathRequest): Promise<HarmonyDevEcoSetPathResult>",
+            summary: "Persist the HarmonyOS Command Line Tools path (clears studioPath).",
+            jsDoc:
+              "/**\n * Persist the HarmonyOS Command Line Tools path. Writing CLT clears studioPath (mutual exclusion).\n * @param request - `{ path }` absolute CLT root, or empty string to clear.\n */",
+          },
+          {
+            kind: "method",
+            name: "readTextFile",
+            signature: "@Remote('readTextFile') async readTextFile(request: HarmonyDevEcoPathRequest): Promise<HarmonyDevEcoReadTextFileResult>",
+            summary: "Read a UTF-8 text file from an absolute host path (2 MiB cap).",
+            jsDoc:
+              "/**\n * Read a UTF-8 text file from an absolute host path for the .ets viewer.\n * @param request - `{ path }` absolute host path.\n * @returns `{ path, content, bytes, truncated }`.\n */",
           },
           {
             kind: "method",
@@ -506,6 +698,22 @@ export const TYPERT = {
             summary: "Fetch detailed metadata for a single device.",
             jsDoc:
               "/**\n * Fetch detailed metadata for a single device.\n * @param request - `{ device }` serial / id.\n */",
+          },
+          {
+            kind: "method",
+            name: "deviceConnectIp",
+            signature: "@Remote('deviceConnectIp') async deviceConnectIp(request: HarmonyDevEcoDeviceIpConnRequest): Promise<HarmonyDevEcoDeviceConnectIpResult>",
+            summary: "Connect a device over TCP/IP via `hdc tconn <ip>:<port>` (devecocli has no equivalent).",
+            jsDoc:
+              "/**\n * Connect a device over TCP/IP via `hdc tconn <ip>:<port>`.\n * @param request - `{ ip, port }`; port is REQUIRED (hdc has no default).\n * @returns `{ address, connected, message, hdc }`.\n */",
+          },
+          {
+            kind: "method",
+            name: "deviceDisconnectIp",
+            signature: "@Remote('deviceDisconnectIp') async deviceDisconnectIp(request: HarmonyDevEcoDeviceIpConnRequest): Promise<HarmonyDevEcoDeviceDisconnectIpResult>",
+            summary: "Disconnect a TCP device target via `hdc tconn <ip>:<port> -remove`.",
+            jsDoc:
+              "/**\n * Disconnect a TCP device target via `hdc tconn <ip>:<port> -remove`.\n * @param request - `{ ip, port }`; port is REQUIRED (hdc has no default).\n * @returns `{ address, disconnected, message, hdc }`.\n */",
           },
           {
             kind: "method",
@@ -545,7 +753,23 @@ export const TYPERT = {
             signature: "@Remote('uiDump') async uiDump(request?: HarmonyDevEcoUiDumpRequest): Promise<HarmonyDevEcoUiDumpResult>",
             summary: "Dump the current UI tree of a device or emulator into a flat node list.",
             jsDoc:
-              "/**\n * Dump the current UI tree of a device or emulator into a flat node list.\n * @param request - optional `{ device }` filter.\n */",
+              "/**\n * Dump the current UI tree of a device or emulator into a flat node list.\n * @param request - optional `{ device }` filter, plus `windowId` (single window) or `allWindows` (every window); each node reports its owning `windowId`.\n */",
+          },
+          {
+            kind: "method",
+            name: "uiDevEcoTree",
+            signature: "@Remote('uiDevEcoTree') async uiDevEcoTree(request?: HarmonyDevEcoUiDevEcoTreeRequest): Promise<HarmonyDevEcoUiDevEcoTreeResult>",
+            summary: "Fetch the component tree through DevEco's development-debug channel (ark socket + WebSocket); the only source with declared padding/margin/border and component names.",
+            jsDoc:
+              "/**\n * DevEco development-debug tree source (`hdc fport ark:<pid>@<pkg>` + WebSocket `type:root`).\n * @param request - optional `{ device }`, `pid` (default: focused window's pid), `packageName`.\n * @returns `{ nodes, source: \"deveco\" }` — same node shape as uiDump, plus declared box-model values.\n */",
+          },
+          {
+            kind: "method",
+            name: "uiWindowList",
+            signature: "@Remote('uiWindowList') async uiWindowList(request?: HarmonyDevEcoUiWindowListRequest): Promise<HarmonyDevEcoUiWindowListResult>",
+            summary: "List the device's UI windows (id, name, pid, displayId, focused) for the Inspector's window selector.",
+            jsDoc:
+              "/**\n * List the device's UI windows.\n * @param request - optional `{ device }` filter and `all` to include system windows.\n * @returns `{ windows }` — each `{ id, name, pid, displayId, focused }`.\n */",
           },
           {
             kind: "method",
@@ -599,9 +823,18 @@ export const TYPERT = {
               "export type HarmonyDevEcoGetConfigResult = { ok: true; value: { config: { studioPath: string; cltPath: string; updatedAt: number }; resolved: { source: 'devecocli'|'clt'|'studio'|'none'; exec?: string; path?: string; version?: readonly number[] | string; minVersionOk: boolean; message: string }; discovery: HarmonyDevEcoDiscovery | null } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
-            name: "HarmonyDevEcoGetSettingsNamespaceResult",
+            name: "HarmonyDevEcoPathRequest",
+            declaration: "export interface HarmonyDevEcoPathRequest {\n    readonly path: string;\n}",
+          },
+          {
+            name: "HarmonyDevEcoSetPathResult",
             declaration:
-              "export type HarmonyDevEcoGetSettingsNamespaceResult = { ok: true; value: { namespace: string } } | { ok: false; error: { code: string; message?: string } };",
+              "export type HarmonyDevEcoSetPathResult = { ok: true; value: { config: HarmonyDevEcoConfig; resolved: HarmonyDevEcoResolved } } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "HarmonyDevEcoReadTextFileResult",
+            declaration:
+              "export type HarmonyDevEcoReadTextFileResult = { ok: true; value: { path: string; content: string; bytes: number; truncated: boolean } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
             name: "HarmonyDevEcoRescanRequest",
@@ -672,12 +905,35 @@ export const TYPERT = {
           },
           {
             name: "HarmonyDevEcoUiDumpRequest",
-            declaration: "export interface HarmonyDevEcoUiDumpRequest {\n    readonly device?: string;\n}",
+            declaration: "export interface HarmonyDevEcoUiDumpRequest {\n    readonly device?: string;\n    readonly windowId?: number;\n    readonly allWindows?: boolean;\n}",
+          },
+          {
+            name: "HarmonyDevEcoUiDevEcoTreeRequest",
+            declaration: "export interface HarmonyDevEcoUiDevEcoTreeRequest {\n    readonly device?: string;\n    readonly pid?: number;\n    readonly packageName?: string;\n}",
+          },
+          {
+            name: "HarmonyDevEcoUiDevEcoTreeResult",
+            declaration:
+              "export type HarmonyDevEcoUiDevEcoTreeResult = { ok: true; value: { nodes: readonly HarmonyDevEcoUiNode[]; source: string } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
             name: "HarmonyDevEcoUiDumpResult",
             declaration:
               "export type HarmonyDevEcoUiDumpResult = { ok: true; value: { nodes: readonly HarmonyDevEcoUiNode[] } } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "HarmonyDevEcoUiWindowListRequest",
+            declaration: "export interface HarmonyDevEcoUiWindowListRequest {\n    readonly device?: string;\n    readonly all?: boolean;\n}",
+          },
+          {
+            name: "HarmonyDevEcoUiWindowListResult",
+            declaration:
+              "export type HarmonyDevEcoUiWindowListResult = { ok: true; value: { windows: readonly HarmonyDevEcoUiWindow[] } } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "HarmonyDevEcoUiWindow",
+            declaration:
+              "export interface HarmonyDevEcoUiWindow {\n    readonly id: number;\n    readonly name: string;\n    readonly pid: number;\n    readonly displayId: number;\n    readonly focused: boolean;\n}",
           },
           {
             name: "HarmonyDevEcoUiScreenshotRequest",
@@ -687,7 +943,7 @@ export const TYPERT = {
           {
             name: "HarmonyDevEcoUiScreenshotResult",
             declaration:
-              "export type HarmonyDevEcoUiScreenshotResult = { ok: true; value: { savedTo: string; stdout: string; stderr: string } } | { ok: false; error: { code: string; message?: string } };",
+              "export type HarmonyDevEcoUiScreenshotResult = { ok: true; value: { savedTo: string; stdout: string; stderr: string; dataUrl: string; imageWidth: number; imageHeight: number; byteSize: number } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
             name: "HarmonyDevEcoUiTapRequest",
@@ -756,7 +1012,7 @@ export const TYPERT = {
           {
             name: "HarmonyDevEcoUiNode",
             declaration:
-              "export interface HarmonyDevEcoUiNode {\n    readonly index: number;\n    readonly text: string;\n    readonly resourceId: string;\n    readonly className: string;\n    readonly bounds: { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number; readonly width: number; readonly height: number };\n    readonly boundsStr: string;\n}",
+              "export interface HarmonyDevEcoUiNode {\n    readonly index: number;\n    readonly depth: number;\n    readonly parentIndex: number;\n    readonly windowId: number;\n    readonly text: string;\n    readonly resourceId: string;\n    readonly className: string;\n    readonly bounds: { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number; readonly width: number; readonly height: number };\n    readonly boundsStr: string;\n    readonly padding: HarmonyDevEcoUiBoxSides;\n    readonly margin: HarmonyDevEcoUiBoxSides;\n    readonly borderWidth: number;\n    readonly borderRadius: number;\n    readonly borderColor: string;\n    readonly opacity: number;\n    readonly visible: boolean;\n    readonly enabled: boolean;\n    readonly clickable: boolean;\n    readonly attrs: Readonly<Record<string, string | number | boolean>>;\n}\n\nexport interface HarmonyDevEcoUiBoxSides {\n    readonly top: number;\n    readonly right: number;\n    readonly bottom: number;\n    readonly left: number;\n}",
           },
         ],
       },
