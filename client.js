@@ -470,91 +470,109 @@ window.__ModuleLoader__.load({
       }
     }
 
-    // ---- ArkTS syntax highlight (lightweight regex tokenizer) -----------
+    // ---- ArkTS syntax highlight（参考 DevEco Studio 的着色项：注释/字符串/
+    // 数字/装饰器/关键字/类型（含声明式 UI 组件名）。字符扫描状态机——字符串内
+    // 的 // 不再被当注释、模板串与块注释跨行携带状态，build() { … } 声明式 UI
+    // 里的 URL、Don't、`…${}…` 等不再打乱后续高亮）--------------------------
     const ARKTS_KEYWORDS = new Set([
       "component", "struct", "build", "function", "const", "let", "var", "if", "else", "for",
       "while", "do", "return", "import", "export", "from", "as", "class", "extends", "implements",
       "interface", "type", "enum", "public", "private", "protected", "static", "readonly",
       "async", "await", "this", "super", "new", "throw", "try", "catch", "finally", "void",
       "true", "false", "null", "undefined", "in", "of", "instanceof", "typeof", "switch",
-      "case", "break", "continue", "default", "yield", "delete", "void",
-    ]);
-    const ARKTS_DECORATORS = new Set([
-      "Entry", "Component", "State", "Prop", "Link", "Provide", "Consume", "ObjectLink",
-      "Watch", "Builder", "BuilderParam", "Extend", "Styles", "Reusable", "Concurrent",
-      "Type", "Observer", "Track", "Require", "CustomDialog", "AnimatableExtend",
-      "Animatable", "Preview", "Computed", "Local", "Param", "Event", "Watch",
+      "case", "break", "continue", "default", "yield", "delete",
     ]);
 
-    function tokenizeArktsLine(line) {
-      // Returns an array of {t: 'kw'|'str'|'num'|'com'|'deco'|'type'|'plain', v: string}
-      // Order matters: comments first, then strings, then decorators/keywords, then numbers.
-      const tokens = [];
-      let rest = line;
-      // line comment: // ...
-      const cmIdx = rest.indexOf("//");
-      let code = rest;
-      let comment = "";
-      if (cmIdx >= 0) {
-        code = rest.slice(0, cmIdx);
-        comment = rest.slice(cmIdx);
-      }
-      // string literals "..." or '...'
-      const strRe = /(['"])((?:\\.|(?!\1).)*)\1/g;
-      let last = 0;
-      let m;
-      const codeTokens = [];
-      while ((m = strRe.exec(code)) !== null) {
-        if (m.index > last) codeTokens.push({ t: "plain", v: code.slice(last, m.index) });
-        codeTokens.push({ t: "str", v: m[0] });
-        last = m.index + m[0].length;
-      }
-      if (last < code.length) codeTokens.push({ t: "plain", v: code.slice(last) });
-
-      // Within plain chunks, find identifiers and numbers.
-      const idRe = /(@?[A-Za-z_][A-Za-z0-9_]*)|(\d+\.?\d*)/g;
-      const final = [];
-      for (const ct of codeTokens) {
-        if (ct.t !== "plain") { final.push(ct); continue; }
-        let i = 0;
-        let lm;
-        idRe.lastIndex = 0;
-        const local = ct.v;
-        let lastPos = 0;
-        while ((lm = idRe.exec(local)) !== null) {
-          if (lm.index > lastPos) final.push({ t: "plain", v: local.slice(lastPos, lm.index) });
-          const word = lm[0];
-          if (lm[1] !== undefined) {
-            if (word.startsWith("@")) {
-              const name = word.slice(1);
-              final.push({ t: "deco", v: ARKTS_DECORATORS.has(name) ? word : word });
-            } else if (ARKTS_KEYWORDS.has(word)) {
-              final.push({ t: "kw", v: word });
-            } else if (/^[A-Z]/.test(word)) {
-              final.push({ t: "type", v: word });
-            } else {
-              final.push({ t: "plain", v: word });
-            }
-          } else if (lm[2] !== undefined) {
-            final.push({ t: "num", v: word });
-          }
-          lastPos = lm.index + word.length;
+    // 全文扫描 → 每行一个 token 数组（{t:'kw'|'str'|'num'|'com'|'deco'|'type'|'plain', v}）。
+    // 模板串 `…` 与块注释 /* … */ 跨行时状态延续，每行按段着色。
+    function tokenizeArkts(content) {
+      const out = [];
+      let line = [];
+      let buf = "";
+      let bufKind = "plain";
+      const endBuf = () => { if (buf) { line.push({ t: bufKind, v: buf }); buf = ""; bufKind = "plain"; } };
+      const nl = () => { endBuf(); out.push(line); line = []; };
+      const isIdStart = (c) => (c >= "A" && c <= "Z") || (c >= "a" && c <= "z") || c === "_";
+      const isId = (c) => isIdStart(c) || (c >= "0" && c <= "9");
+      let state = "code"; // code | block | squote | dquote | template
+      let i = 0;
+      const n = content.length;
+      while (i < n) {
+        const c = content[i];
+        if (c === "\r") { i++; continue; }
+        if (c === "\n") { nl(); i++; continue; }
+        if (state === "block") {
+          bufKind = "com";
+          if (c === "*" && content[i + 1] === "/") { buf += "*/"; i += 2; endBuf(); state = "code"; continue; }
+          buf += c; i++; continue;
         }
-        if (lastPos < local.length) final.push({ t: "plain", v: local.slice(lastPos) });
+        if (state === "squote" || state === "dquote" || state === "template") {
+          bufKind = "str";
+          const closer = state === "squote" ? "'" : state === "dquote" ? '"' : "`";
+          if (c === "\\") { buf += c + (content[i + 1] !== undefined ? content[i + 1] : ""); i += 2; continue; }
+          buf += c; i++;
+          if (c === closer) { endBuf(); state = "code"; }
+          continue;
+        }
+        // ---- code ----
+        if (c === "/" && content[i + 1] === "/") {
+          endBuf(); bufKind = "com"; buf = "//"; i += 2;
+          while (i < n && content[i] !== "\n") buf += content[i++];
+          endBuf(); continue;
+        }
+        if (c === "/" && content[i + 1] === "*") {
+          endBuf(); bufKind = "com"; buf = "/*"; i += 2; state = "block"; continue;
+        }
+        if (c === "'" || c === '"' || c === "`") {
+          endBuf(); bufKind = "str"; buf = c; i++;
+          state = c === "'" ? "squote" : c === '"' ? "dquote" : "template";
+          continue;
+        }
+        if (c >= "0" && c <= "9") {
+          endBuf(); bufKind = "num";
+          if (c === "0" && (content[i + 1] === "x" || content[i + 1] === "X")) {
+            buf += content[i++] + content[i++];
+            while (i < n && /[0-9a-fA-F]/.test(content[i])) buf += content[i++];
+          } else {
+            while (i < n && content[i] >= "0" && content[i] <= "9") buf += content[i++];
+            if (content[i] === "." && content[i + 1] >= "0" && content[i + 1] <= "9") {
+              buf += content[i++];
+              while (i < n && content[i] >= "0" && content[i] <= "9") buf += content[i++];
+            }
+          }
+          endBuf(); continue;
+        }
+        if (c === "@") {
+          endBuf(); bufKind = "deco"; buf = "@"; i++;
+          while (i < n && isId(content[i])) buf += content[i++];
+          endBuf(); continue;
+        }
+        if (isIdStart(c)) {
+          endBuf();
+          let w = "";
+          while (i < n && isId(content[i])) w += content[i++];
+          if (ARKTS_KEYWORDS.has(w)) line.push({ t: "kw", v: w });
+          else if (w[0] >= "A" && w[0] <= "Z") line.push({ t: "type", v: w }); // 类型与声明式 UI 组件名
+          else line.push({ t: "plain", v: w });
+          continue;
+        }
+        buf += c; i++;
       }
-      if (comment) final.push({ t: "com", v: comment });
-      return final;
+      endBuf();
+      out.push(line);
+      return out;
     }
 
     function ArktsCodeView(props) {
       const content = props.content || "";
-      const lines = content.split(/\r?\n/);
+      // 全文一次扫描（模板串/块注释跨行状态正确携带），每行一个 token 数组。
+      const allLines = tokenizeArkts(content);
       const maxLines = 2000;
-      const truncated = lines.length > maxLines;
-      const view = truncated ? lines.slice(0, maxLines) : lines;
+      const truncated = allLines.length > maxLines;
+      const view = truncated ? allLines.slice(0, maxLines) : allLines;
       const rows = [];
       for (let i = 0; i < view.length; i++) {
-        const tokens = tokenizeArktsLine(view[i]);
+        const tokens = view[i];
         rows.push(
           React.createElement(
             "div",
@@ -578,7 +596,7 @@ window.__ModuleLoader__.load({
           { className: "ark-meta" },
           props.path || "",
           " · ",
-          String(lines.length),
+          String(allLines.length),
           " 行",
           props.bytes !== undefined ? " · " + String(props.bytes) + " 字节" : "",
           truncated ? " · 已截断（前 " + maxLines + " 行）" : "",
