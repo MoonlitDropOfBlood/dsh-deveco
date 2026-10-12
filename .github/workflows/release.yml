@@ -97,11 +97,12 @@ jobs:
             dsh-deveco — DSH 的 HarmonyOS 全栈开发套件。
 
             ### 功能
-            - better-sidebar 注册「HarmonyOS Suite」单实例 Tab（HiLog 实时流 / ArkUI Inspector / 项目浏览器）
-            - ArkTS / TypeScript 文件查看器（better-sidebar 内置 viewer 之前匹配 `.ets`）
-            - 设置页 → 插件 → HarmonyOS Suite：DevEco Studio / Command Line Tools 路径管理 + 三平台自发现 + 互斥规则
-            - 工具链优先级（用户决策）：`PATH devecocli` > CLT ≥ 26.0.0 > Studio
-            - 17 个 Remote 方法：toolchain / devices / HiLog（list+stream）/ ArkUI（dump+screenshot+tap+swipe+text）
+            - 官方右侧边栏两个 Tab：**HiLog 检查器**（实时流 + 级别/包名/关键词过滤）、**ArkUI Inspector**（Chrome Elements 风格：截图点选高亮 + 可折叠组件树 + 节点属性搜索 + 盒子模型）
+            - **两套 UI 树源**：DevEco 调试源（反编译复刻 DevEco Studio 同款 `ark:<pid>@<pkg>` 调试链路，**唯一带 padding/margin/border 声明值与自定义组件名**）/ uitest 无障碍树（适合已发布应用）
+            - **`harmony_ui_tree` agent 工具**（`ctx.tools`）：对话里的 agent 直接取 ArkUI 组件树
+            - **.ets 文件查看器**：ArkTS 语法高亮（方法/类型/装饰器/声明式 UI 组件着色，对标 DevEco Studio）
+            - 设置页 → HarmonyOS Suite：DevEco Studio / Command Line Tools 路径管理（三平台自发现 + 互斥）+ 设备管理（USB / 网络 `hdc tconn`）
+            - 21 个 Remote 方法 · 82 个单元测试
 
             ### 📦 安装
             ```bash
