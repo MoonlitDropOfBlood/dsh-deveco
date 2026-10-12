@@ -854,6 +854,452 @@ export function parseUiRawDump (input) {
   return nodes
 }
 
+/**
+ * ── DevEco 开发调试源（反编译 `layout-inspector-server` / `ohos-debug-common` 还原）──
+ *
+ * DevEco 拿组件树**不是**走 uitest dump，而是：
+ *   1. `hdc fport tcp:<本机端口> ark:<pid>@<包名>`（旧协议 `localabstract:<pid><tid><serviceName>`）
+ *   2. 连 `ws://127.0.0.1:<本机端口>`（**裸 socket + 极简 6 头握手**，见下）
+ *   3. 发 `{"type":"connected"}` → `{"type":"inspectorAbilities"}` → `{"type":"tree"}`
+ *   4. 应用回 `{"type":"root", …}` ← **组件树**（含 `$attrs.margin/padding/border`、
+ *      `viewTag`/`$attrs.label`、`type:"custom"|"build-in"`）
+ *
+ * 这些字段**只存在于应用侧 inspector 树**，uitest（30 属性）不含，所以走
+ * dump 时盒子模型永远「未提供」、组件/Builder 名也分不出来。
+ */
+
+/** 端口转发 argv：新协议 `ark:<pid>@<pkg>`（hdclib 的 SocketPortForwardOperation）。 */
+export function buildArkForwardArgs (localPort, pid, packageName) {
+  return ['fport', `tcp:${localPort}`, `ark:${pid}@${packageName}`]
+}
+
+/** 端口转发 argv：旧协议 `localabstract:<pid><tid><serviceName>`（ArkTsPortForwardOperation）。 */
+export function buildLocalAbstractForwardArgs (localPort, pid, tid, serviceName) {
+  return ['fport', `tcp:${localPort}`, `localabstract:${pid}${tid || ''}${serviceName || ''}`]
+}
+
+/** 解除转发的 argv（`hdc fport rm`——实测 `--remove` 不是合法子命令，会静默失败泄漏规则）。 */
+export function buildForwardRemoveArgs (localPort, remoteNode) {
+  return ['fport', 'rm', `tcp:${localPort}`, remoteNode]
+}
+
+/** DevEco 发给应用调试 socket 的三条消息（`MessageConstant` / `ConnectServerSession`）。 */
+export const DEV_ECO_WS_MESSAGES = {
+  connected: '{"type":"connected"}',
+  inspectorAbilities: '{"type":"inspectorAbilities","content":[]}',
+  tree: '{"type":"tree"}',
+}
+
+/**
+ * 在 `{"type":"root", …}` 回包里定位组件树根节点。应用侧节点形如
+ * `{ $type, $ID, $attrs, $rect, $children, viewTag, type }`；根可能直接就是
+ * 节点，也可能在 `root`/`data`/`content`/`tree` 下（含 JSON 字符串）。
+ */
+export function findDevEcoTreeRoot (message) {
+  if (!message || typeof message !== 'object') return null
+  const looksLikeNode = (o) => !!o && typeof o === 'object' &&
+    (o.$children !== undefined || o.$type !== undefined || o.$attrs !== undefined || o.children !== undefined)
+  if (looksLikeNode(message)) return message
+  for (const k of ['root', 'data', 'content', 'tree', 'componentJson', 'getComponentJson']) {
+    const v = message[k]
+    if (looksLikeNode(v)) return v
+    if (typeof v === 'string') {
+      try {
+        const r = findDevEcoTreeRoot(JSON.parse(v))
+        if (r) return r
+      } catch (_) { /* 不是 JSON */ }
+    }
+  }
+  return null
+}
+
+/** `$rect` 归一化成 `{left,top,right,bottom,width,height}`；拿不到返回 null。真实形态（实测）：
+ *  字符串 `"[0.00, 136.00],[1316.00,2734.00]"`、数组 `[l,t,r,b]`、对象 `{startX,startY,endX,endY}` 都支持。 */
+function rectToBounds (rect) {
+  if (!rect) return null
+  const fin = (arr) => Array.isArray(arr) && arr.length >= 4 && arr.every(Number.isFinite)
+  // 字符串 "[l,t],[r,b]"（应用侧 inspector 树的真实形态）
+  if (typeof rect === 'string') {
+    const m = rect.match(/\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]\s*,?\s*\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]/)
+    if (m) {
+      const [l, t, r, b] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])]
+      if (fin([l, t, r, b])) return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t }
+    }
+    return null
+  }
+  if (Array.isArray(rect)) {
+    const [l, t, r, b] = rect.map(Number)
+    if (fin([l, t, r, b])) return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t }
+    return null
+  }
+  if (typeof rect === 'object') {
+    const l = Number(rect.startX ?? rect.left ?? rect.x)
+    const t = Number(rect.startY ?? rect.top ?? rect.y)
+    const r = Number(rect.endX ?? rect.right)
+    const b = Number(rect.endY ?? rect.bottom)
+    if (fin([l, t, r, b])) return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t }
+    const w = Number(rect.width), h = Number(rect.height)
+    if (fin([l, t, w, h])) return { left: l, top: t, right: l + w, bottom: t + h, width: w, height: h }
+  }
+  return null
+}
+
+/**
+ * 解析应用侧组件树（DevEco 开发调试源）为与 `parseUiRawDump` 同形的扁平节点。
+ * 与 dump 的关键差别：**有**盒模型声明值（`$attrs.margin/padding/border*`）、
+ * **有**组件/Builder 名（`viewTag`/`$attrs.label`/`$attrs.inspectorLabel`），
+ * 并且 `$type === "JsView"` 或 `type ∈ {"custom","build-in"}` 可权威判定自定义组件。
+ */
+/** 声明值字符串 → 数字：剥掉 `vp`/`px`/`fp`/`%` 单位（真实数据全是 `"12.00vp"` 这类带单位字符串）。 */
+function toUnitNumber (v) {
+  if (v === undefined || v === null || v === '') return undefined
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined
+  if (typeof v !== 'string') return undefined
+  const m = String(v).trim().match(/^(-?[\d.]+)\s*(vp|px|fp|%)?$/i)
+  return m ? Number(m[1]) : undefined
+}
+
+/**
+ * `$attrs` 盒模型声明值 → 四边对象。真实形态（实测）：
+ *  `"0.00vp"`（四边同值）、JSON 字符串 `{"top":"0.00vp","right":"16.00vp",…}`、
+ *  对象 `{top,right,bottom,left}`（值可带单位）、数字、CSS 四值串。拿不到返回 undefined。
+ */
+function toBoxSides (v) {
+  if (v === undefined || v === null || v === '') return undefined
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return { top: v, right: v, bottom: v, left: v }
+  }
+  if (typeof v === 'string') {
+    const s = v.trim()
+    // JSON 字符串对象（margin 的真实形态）
+    if (s.startsWith('{')) {
+      try { return toBoxSides(JSON.parse(s)) } catch (_) { return undefined }
+    }
+    const n = toUnitNumber(s)
+    if (n !== undefined) return { top: n, right: n, bottom: n, left: n }
+    // "12 8" / "12 8 4" / "12 8 6 4"（CSS 顺序：上 右 下 左）
+    const parts = s.split(/[\s,]+/).map((x) => toUnitNumber(x))
+    if (parts.length >= 4 && parts.every((x) => x !== undefined)) {
+      return { top: parts[0], right: parts[1], bottom: parts[2], left: parts[3] }
+    }
+    return undefined
+  }
+  if (typeof v === 'object') {
+    const top = toUnitNumber(v.top ?? v.start ?? v.y)
+    const right = toUnitNumber(v.right ?? v.end ?? v.x)
+    const bottom = toUnitNumber(v.bottom ?? v.end ?? v.y)
+    const left = toUnitNumber(v.left ?? v.start ?? v.x)
+    if ([top, right, bottom, left].every((x) => x !== undefined)) return { top, right, bottom, left }
+    return undefined
+  }
+  return undefined
+}
+
+/**
+ * 圆角声明值 → 数字。真实形态：`"28.00px"` 字符串，或
+ * `{topLeft,topRight,bottomLeft,bottomRight}` 四角对象（取最大角）。拿不到返回 undefined。
+ */
+function toBorderRadius (v) {
+  if (v === undefined || v === null || v === '') return undefined
+  const n = toUnitNumber(v)
+  if (n !== undefined) return n
+  if (typeof v === 'object') {
+    const corners = [v.topLeft, v.topRight, v.bottomLeft, v.bottomRight].map((x) => toUnitNumber(x)).filter((x) => x !== undefined)
+    return corners.length ? Math.max(...corners) : undefined
+  }
+  if (typeof v === 'string' && v.trim().startsWith('{')) {
+    try { return toBorderRadius(JSON.parse(v)) } catch (_) { return undefined }
+  }
+  return undefined
+}
+
+/** 声明值 → 有限数字（borderWidth 用），带单位字符串可解析，拿不到返回 undefined。 */
+function toNumOrUndefined (v) {
+  return toUnitNumber(v)
+}
+
+export function parseDevEcoTree (root, windowId = 0) {
+  const tree = findDevEcoTreeRoot(root)
+  if (!tree) return []
+  const nodes = []
+  const toStr = (v) => (v === undefined || v === null) ? '' : String(v)
+  const truthy = (v) => { const s = toStr(v).toLowerCase(); return s === 'true' || s === '1' || s === 'yes' }
+  const visit = (node, depth, parentIndex) => {
+    if (!node || typeof node !== 'object') return
+    const attrs = node.$attrs && typeof node.$attrs === 'object' ? node.$attrs : {}
+    const bounds = rectToBounds(node.$rect ?? node.rect ?? attrs.rect) ||
+      { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }
+    // 组件名 / Builder 名：viewTag（JsView 的名字）→ $attrs.label → $attrs.inspectorLabel
+    const name = toStr(node.viewTag ?? attrs.label ?? attrs.inspectorLabel ?? '')
+    const rawType = toStr(node.$type ?? node.type ?? '')
+    const typeTag = toStr(node.type)                       // "custom" | "build-in" | ""
+    const isCustom = rawType === 'JsView' || typeTag === 'custom'
+    const rectStr = `[${bounds.left},${bounds.top}][${bounds.right},${bounds.bottom}]`
+    const rawAttrs = {}
+    for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null) rawAttrs[k] = typeof v === 'object' ? JSON.stringify(v) : toStr(v)
+    // 真实数据语义（实测）：Text 文本在 $attrs.content、Button 在 $attrs.label；
+    // visibility 是枚举串 "Visibility.Visible|Hidden|None"；focused/enabled 是布尔。
+    const visibilityEnum = toStr(attrs.visibility ?? '')
+    const visible = node.visible !== false
+      ? !(visibilityEnum === 'Visibility.Hidden' || visibilityEnum === 'Visibility.None' || toStr(attrs.visible) === 'false')
+      : false
+    const devId = toStr(attrs.id ?? '')
+    nodes.push({
+      index: nodes.length,
+      depth,
+      parentIndex,
+      windowId,
+      text: toStr(node.$text ?? node.text ?? attrs.text ?? attrs.content ?? attrs.label),
+      originalText: toStr(attrs.accessibilityText ?? ''),
+      devId,
+      key: devId || name,
+      resourceId: name || devId || toStr(node.$ID),
+      accessibilityId: toStr(node.$ID ?? ''),
+      componentName: extractComponentName(name),
+      ownerComponent: '',
+      className: rawType === 'JsView' ? (name || 'JsView') : rawType,
+      bundleName: '',
+      abilityName: '',
+      pagePath: '',
+      bounds,
+      boundsStr: rectStr,
+      origBounds: bounds,
+      origBoundsStr: rectStr,
+      contentBox: undefined,
+      // 声明值——这条源终于能给全，不再显示「未提供」。
+      padding: toBoxSides(attrs.padding),
+      margin: toBoxSides(attrs.margin),
+      borderWidth: toNumOrUndefined(attrs.borderWidth ?? attrs.borderTopWidth),
+      borderRadius: toBorderRadius(attrs.borderRadius ?? attrs.cornerRadius),
+      borderColor: toStr(attrs.borderColor ?? ''),
+      opacity: toNumOrUndefined(attrs.opacity) ?? 1,
+      visible,
+      enabled: attrs.enabled === undefined ? true : (attrs.enabled === true || truthy(attrs.enabled)),
+      focused: attrs.focused === true || truthy(attrs.focused),
+      selected: false,
+      checked: truthy(attrs.checked),
+      checkable: truthy(attrs.checkable),
+      clipped: false,
+      clickable: truthy(attrs.clickable),
+      longClickable: truthy(attrs.longClickable ?? attrs.longclickable),
+      scrollable: truthy(attrs.scrollable),
+      zIndex: toNumOrUndefined(attrs.zIndex) || 0,
+      hitTestBehavior: toStr(attrs.hitTestBehavior ?? ''),
+      hierarchy: '',
+      hashcode: '',
+      displayId: '',
+      backgroundColor: toStr(attrs.backgroundColor ?? ''),
+      backgroundImage: toStr(attrs.backgroundImage ?? ''),
+      blur: '',
+      description: toStr(attrs.accessibilityDescription ?? attrs.description ?? ''),
+      hint: toStr(attrs.hint ?? attrs.accessibilityTextHint ?? ''),
+      rawAttrs,
+      attrs: Object.assign({}, rawAttrs,
+        name ? { componentOrBuilderName: name } : {},
+        isCustom ? { isCustom: 'true' } : {},
+        typeTag ? { type: typeTag } : {}),
+    })
+    const kids = Array.isArray(node.$children) ? node.$children
+      : (Array.isArray(node.children) ? node.children : [])
+    for (const c of kids) visit(c, depth + 1, nodes.length - 1)
+  }
+  visit(tree, 0, -1)
+  // ownerComponent：最近的命名自定义组件祖先（供属性面板显示「所属组件」）。
+  const byIndex = new Map(nodes.map((n) => [n.index, n]))
+  for (const n of nodes) {
+    if (n.componentName) { n.ownerComponent = n.componentName; continue }
+    let p = n.parentIndex
+    const seen = new Set()
+    while (p !== undefined && p >= 0 && !seen.has(p)) {
+      seen.add(p)
+      const parent = byIndex.get(p)
+      if (!parent) break
+      if (parent.componentName) { n.ownerComponent = parent.componentName; break }
+      p = parent.parentIndex
+    }
+  }
+  return nodes
+}
+
+// ---- DevEco 调试 socket 的裸 WebSocket 客户端（纯函数，供 Host 编排） ---------
+//
+// 为什么不用 Node 自带 WebSocket（实测大坑，2026-10）：应用侧 inspector 服务
+// （ets_runtime 的 ConnectServer/HttpHandShake）是**手写的极简 HTTP 解析器**，
+// Node WHATWG WebSocket 的握手带一堆多余头（`sec-websocket-extensions:
+// permessage-deflate`、`sec-fetch-mode`、`user-agent`、`accept-encoding`、
+// 小写头名……），直接被判「HTTP upgrade parameters failure」秒拒（hilog 实证）。
+// DevEco 的 Java-WebSocket 客户端只发 6 个标准头，一次通过。所以这里手写
+// 同款极简握手 + 最小 WS 帧编解码（客户端帧必须 MASK，RFC 6455）。
+
+/**
+ * 构造 Java-WebSocket 风格的极简 WS 升级请求（正好 6 个头，无多余参数）。
+ * @param {string} host 请求行的 Host 值（如 `127.0.0.1:18100`）
+ * @param {string} key Sec-WebSocket-Key（16 字节 base64）
+ */
+export function buildDevEcoWsHandshake (host, key) {
+  return [
+    'GET / HTTP/1.1',
+    'Connection: Upgrade',
+    `Host: ${host}`,
+    `Sec-WebSocket-Key: ${key}`,
+    'Sec-WebSocket-Version: 13',
+    'Upgrade: websocket',
+    '', '',
+  ].join('\r\n')
+}
+
+/** 判断握手响应是否 101（以 `\r\n\r\n` 结尾的完整响应头）。 */
+export function isWsHandshakeAccepted (responseText) {
+  return /^HTTP\/1\.1 101/.test(String(responseText || '').split('\r\n\r\n')[0] || '')
+}
+
+/** 客户端 → 服务端的 MASK 文本帧（RFC 6455：客户端帧必须带 4 字节掩码）。 */
+export function encodeWsClientTextFrame (text, maskBytes) {
+  const mask = maskBytes && maskBytes.length === 4 ? Buffer.from(maskBytes) : Buffer.from([0x11, 0x22, 0x33, 0x44])
+  const payload = Buffer.from(String(text), 'utf8')
+  let header
+  if (payload.length < 126) {
+    header = Buffer.from([0x81, 0x80 | payload.length])
+  } else if (payload.length <= 0xffff) {
+    header = Buffer.alloc(4)
+    header[0] = 0x81; header[1] = 0x80 | 126
+    header.writeUInt16BE(payload.length, 2)
+  } else {
+    header = Buffer.alloc(10)
+    header[0] = 0x81; header[1] = 0x80 | 127
+    header.writeBigUInt64BE(BigInt(payload.length), 2)
+  }
+  const masked = Buffer.alloc(payload.length)
+  for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i % 4]
+  return Buffer.concat([header, mask, masked])
+}
+
+/** PONG 帧（服务端 PING 的应答，同样要 MASK）。 */
+export function encodeWsPongFrame (payloadBytes, maskBytes) {
+  const mask = maskBytes && maskBytes.length === 4 ? Buffer.from(maskBytes) : Buffer.from([0x55, 0x66, 0x77, 0x88])
+  const payload = Buffer.from(payloadBytes || Buffer.alloc(0))
+  const header = payload.length < 126
+    ? Buffer.from([0x8a, 0x80 | payload.length])
+    : (() => { const h = Buffer.alloc(4); h[0] = 0x8a; h[1] = 0x80 | 126; h.writeUInt16BE(payload.length, 2); return h })()
+  const masked = Buffer.alloc(payload.length)
+  for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i % 4]
+  return Buffer.concat([header, mask, masked])
+}
+
+/**
+ * 尽量从缓冲区解码完整的服务端帧（服务端帧不 MASK）。
+ * @returns {{texts:string[], pings:Buffer[], closed:boolean, rest:Buffer}}
+ *   `texts` 是按序解出的文本帧（二进制帧按 utf8 尝试解码）；不完整帧留在 `rest`。
+ */
+export function decodeWsServerFrames (buffer) {
+  const texts = []
+  const pings = []
+  let closed = false
+  let buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || Buffer.alloc(0))
+  while (true) {
+    if (buf.length < 2) break
+    const op = buf[0] & 0x0f
+    const masked = (buf[1] & 0x80) !== 0
+    let len = buf[1] & 0x7f
+    let off = 2
+    if (len === 126) {
+      if (buf.length < 4) break
+      len = buf.readUInt16BE(2); off = 4
+    } else if (len === 127) {
+      if (buf.length < 10) break
+      len = Number(buf.readBigUInt64BE(2)); off = 10
+    }
+    let maskKey = null
+    if (masked) {
+      if (buf.length < off + 4) break
+      maskKey = buf.subarray(off, off + 4); off += 4
+    }
+    if (buf.length < off + len) break
+    let payload = buf.subarray(off, off + len)
+    if (maskKey) {
+      const un = Buffer.alloc(len)
+      for (let i = 0; i < len; i++) un[i] = payload[i] ^ maskKey[i % 4]
+      payload = un
+    }
+    buf = buf.subarray(off + len)
+    if (op === 0x1 || op === 0x2 || op === 0x0) texts.push(payload.toString('utf8'))
+    else if (op === 0x9) pings.push(payload)
+    else if (op === 0x8) closed = true
+    // op 0xA（pong）忽略
+  }
+  return { texts, pings, closed, rest: buf }
+}
+
+// ---- Agent 工具面：DevEco 调试树的模型友好投影（纯函数，供 harmony_ui_tree 工具用） ----
+
+/**
+ * 把 `parseDevEcoTree` 节点收缩成 agent 工具的紧凑节点（canonical JSON）。
+ * 展示名沿用 UI 的标签规则：组件名 → 开发者 id → 真实类型。
+ * @param {object} n parseDevEcoTree 输出节点
+ * @param {boolean} [includeAttrs] 附带全部原始属性（很占篇幅，默认不带）
+ */
+export function devEcoNodeSummary (n, includeAttrs = false) {
+  if (!n || typeof n !== 'object') return null
+  const toStr = (v) => (v === undefined || v === null) ? '' : String(v)
+  const out = {
+    index: Number(n.index) || 0,
+    depth: Number(n.depth) || 0,
+    parentIndex: Number.isFinite(n.parentIndex) ? n.parentIndex : -1,
+    name: toStr(n.componentName || n.devId || n.className),
+    componentName: toStr(n.componentName),
+    className: toStr(n.className),
+    kind: (n.attrs && n.attrs.isCustom === 'true') ? 'custom' : 'build-in',
+    text: toStr(n.text),
+    devId: toStr(n.devId),
+    accessibilityId: toStr(n.accessibilityId),
+    bounds: n.bounds && typeof n.bounds === 'object'
+      ? {
+          left: Number(n.bounds.left) || 0,
+          top: Number(n.bounds.top) || 0,
+          right: Number(n.bounds.right) || 0,
+          bottom: Number(n.bounds.bottom) || 0,
+          width: Number(n.bounds.width) || 0,
+          height: Number(n.bounds.height) || 0,
+        }
+      : { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 },
+    visible: n.visible !== false,
+    enabled: n.enabled !== false,
+    clickable: n.clickable === true,
+    scrollable: n.scrollable === true,
+  }
+  // 声明值：有值才挂 key
+  if (n.padding) out.padding = n.padding
+  if (n.margin) out.margin = n.margin
+  if (n.borderWidth !== undefined && n.borderWidth !== null) out.borderWidth = n.borderWidth
+  if (n.borderRadius !== undefined && n.borderRadius !== null) out.borderRadius = n.borderRadius
+  if (n.borderColor) out.borderColor = toStr(n.borderColor)
+  if (includeAttrs && n.rawAttrs && typeof n.rawAttrs === 'object') out.attrs = n.rawAttrs
+  return out
+}
+
+/** 摘要节点数组 → 缩进树文本行（每个节点一行，模型可读的紧凑形态）。 */
+export function devEcoTreeLines (nodes) {
+  const out = []
+  for (const n of (Array.isArray(nodes) ? nodes : [])) {
+    if (!n) continue
+    const indent = '  '.repeat(Math.max(0, Number(n.depth) || 0))
+    const b = n.bounds || {}
+    const parts = [`${indent}${n.name || n.className || 'Node'}`]
+    if (n.kind === 'custom') parts.push('[组件]')
+    if (n.className && n.className !== n.name) parts.push(n.className)
+    parts.push(`(${b.left ?? 0},${b.top ?? 0},${b.right ?? 0},${b.bottom ?? 0})`)
+    if (n.text) parts.push(JSON.stringify(n.text))
+    if (n.devId && n.devId !== n.name) parts.push(`id=${n.devId}`)
+    if (n.padding) parts.push(`pad:${n.padding.top} ${n.padding.right} ${n.padding.bottom} ${n.padding.left}`)
+    if (n.margin) parts.push(`margin:${n.margin.top} ${n.margin.right} ${n.margin.bottom} ${n.margin.left}`)
+    if (n.borderWidth !== undefined && n.borderWidth !== null) parts.push(`bw:${n.borderWidth}`)
+    if (n.borderRadius !== undefined && n.borderRadius !== null) parts.push(`br:${n.borderRadius}`)
+    if (n.borderColor) parts.push(`bc:${n.borderColor}`)
+    out.push(parts.join(' '))
+  }
+  return out
+}
+
 export function hitTest (nodes, x, y) {
   if (!Array.isArray(nodes) || nodes.length === 0) return null
   let best = null
