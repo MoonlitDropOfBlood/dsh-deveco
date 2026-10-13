@@ -25,7 +25,7 @@ dsh-deveco/
 ├── harmony-config.mjs        # 零依赖：配置持久化 + Studio/CLT 互斥 + 自发现调度
 ├── harmony-device.mjs        # 零依赖：devecocli 进程封装 + hdc IP 连接（tconn）+ HiLog/ui-layout JSON 解析
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 82 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析）
+├── scripts/self-test.mjs     # 84 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影与子树截断/自定义组件/字体属性/devId 解析）
 ├── .github/workflows/release.yml  # v* tag → 构建 + 发布 GitHub Release
 ├── AGENTS.md                 # 本文件
 ├── README.md                 # 用户面向
@@ -147,7 +147,7 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 
 **`harmony_ui_tree`** —— DevEco 调试源取树，注册进 DSH 的 `ctx.tools`（`@deepseek-ai/dsh-tools` 的 `defineTool`），agent 可直接调用：
 
-- **参数**：`device`（序列号，省略用默认目标）、`pid` / `package_name`（省略取前台窗口应用）、`format`（`tree` 缩进树文本＝默认 / `json` 完整节点 JSON）、`include_attrs`（附带全部原始属性，占篇幅，默认关）、`max_nodes`（默认 400、上限 2000，截断有 `truncated` 标记）。
+- **参数**：`device`（序列号，省略用默认目标）、`pid` / `package_name`（省略取前台窗口应用）、`format`（`tree` 缩进树文本＝默认 / `json` 完整节点 JSON）、`include_attrs`（附带全部原始属性，占篇幅，默认关）、`max_nodes`（默认 400、上限 4000）。截断**整棵子树省略，绝不发半棵**：被省略节点的最近保留祖先带 `childrenOmitted: true` + `hiddenDirect`（省略的直接子节点数），每个节点带 `childCount`（完整树口径的直接子节点总数）——前端/agent 由此知道内部还有多少孩子。
 - **canonical 输出**（`output.schema` 严格校验）：`{ source:"deveco", pid, packageName, nodeCount, truncated, nodes[] }`，节点是 `devEcoNodeSummary` 的紧凑投影（展示名沿用 UI 标签规则：组件名→开发者 id→真实类型；声明值**有值才挂 key**）；`render` 把 nodes 投影成缩进树文本行（`devEcoTreeLines`），`format=json` 时输出完整 JSON。
 - **注册模式**（Host `[Service.init]`）：动态 `import("@deepseek-ai/dsh-tools")` → `this._ctx.inject(["tools"], ...)` → `tools.register(buildHarmonyUiTreeTool(...))`，注册器返回的 disposer 用 `this._ctx.effect(() => off)` 挂到插件生命周期。**全链路 try/catch 优雅降级**：dsh-tools / ctx.tools 任一不可用就静默跳过，Remote/UI 面不受影响。`peerDependencies` 加 `@deepseek-ai/dsh-tools`（双段范围，过兼容性 gate）。
 - **实现复用**：工具走 `service._fetchDevEcoTree()`（rich：nodes + source + pid + packageName）；Remote `uiDevEcoTree` 是它的薄包装（严格按 TYPERT 契约只回 `{nodes, source}`）。同一份取树链路两面共用。
@@ -157,7 +157,7 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 
 ```bash
 npm run check              # 全部 JS 语法检查
-npm test                   # 82 个单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析）
+npm test                   # 84 个单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影与子树截断/自定义组件/字体属性/devId 解析）
 dsh plugin --profile web add .   # 本地安装/重装
 ```
 
@@ -203,6 +203,7 @@ dsh plugin --profile web add .   # 本地安装/重装
 - **ArkUI 高亮框必须用像素坐标，不要用百分比**：overlay 用 `%` 相对 `.harm-shotFrame`（inline-block 包裹 `max-height:100%` 的 img）解析，图片被限高时 frame 与 img 实际盒子不一致 → 蓝框偏移；点击命中却走 `getBoundingClientRect` 所以两者会分叉。现在 `useLayoutEffect` + `ResizeObserver` 量出 img 的**帧内偏移与渲染尺寸**，overlay 与 hit-test 共用同一份 `imgBox`，保证所见即所点。
 - **hdc tconn 的三个坑（实测）**：① `hdc tconn <不可达 IP>` **不返回也不报错**，一直挂着直到被我们的超时杀掉，被杀进程**没有任何输出**（Windows 上 Node 报 `code=null`），所以 `_runHdc` 靠 `err.timedOut` 判定并回「连接超时」而非「无输出」；② 目标是已连接状态时 hdc 打印 **`[Info]Target is connected, repeat operation`**（不是 `Connect OK`），`parseTconnResult` 必须把 `[Info]`/`Target is connected` 当成功；③ `[Fail]...` 与成功都 **exit 0**，不能靠退出码判断成败。
 - **Windows spawn 含空格路径（实测坑）**：`shell:true`（cmd.exe）不会自动给可执行路径加引号，`...\DevEco Studio\...` 这类路径会在第一个空格处截断导致启动失败。`spawnCollect` 对 shell 模式自行给 cmd 加引号；`execHdc`（真 .exe）一律 `shell:false` 交给 libuv 处理引号。
+- **hdc 路径解析的 macOS 兜底**：mac 上 DevEco Studio 的 app bundle 不必然带 `sdk/`（SDK 常由 SDK Manager 下载到 `~/Library/OpenHarmony/Sdk` 或 `~/Library/Huawei/Sdk`，目录带版本号、布局不固定），固定子路径枚举不到会让「hdc 路径不支持 mac」。`resolveHdc` 在固定候选失败后，于已解析工具链根的 `sdk/`、`$DEVECO_SDK_HOME`、`~/Library/OpenHarmony`、`~/Library/Huawei` 里**限深扫描**名为 hdc 的文件（限深 6、限 500 目录，`.gitignore` 式跳过隐藏目录）。
 - **CSS 用 `document.createElement("style")` + `ctx.effect(() => () => styleTag.remove())`**：动态插件专属的 `styles.insert` 在这里不存在。
 - **颜色一律 dsw token**：禁止硬编码 hex/rgba（亮/暗主题下必有一边翻车）。需要透明色用 `color-mix(in srgb, var(--dsw-...) 15%, transparent)`。
 - **`Component.createElement` 必须 bundle 作用域定义**：内联创建（如 `() => React.createElement(...)` 返回值直接传给 slots.register）会每次 render 重新创建 component identity，导致 React 卸载并重建子树、丢失输入态。

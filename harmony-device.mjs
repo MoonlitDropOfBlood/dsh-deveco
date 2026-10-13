@@ -27,7 +27,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 // ---------------------------------------------------------------------------
@@ -1295,9 +1295,57 @@ export function devEcoTreeLines (nodes) {
     if (n.borderWidth !== undefined && n.borderWidth !== null) parts.push(`bw:${n.borderWidth}`)
     if (n.borderRadius !== undefined && n.borderRadius !== null) parts.push(`br:${n.borderRadius}`)
     if (n.borderColor) parts.push(`bc:${n.borderColor}`)
+    if (n.childrenOmitted) parts.push(`+${n.hiddenDirect ?? 0} children hidden`)
     out.push(parts.join(' '))
   }
   return out
+}
+
+/**
+ * agent 工具面的节点裁剪：**整棵子树保留/省略，绝不发半棵**。超出 cap 的节点
+ * 连同其后代整体省略；被省略节点的最近保留祖先标 `childrenOmitted: true` 与
+ * `hiddenDirect`（被省略的直接子节点数）；每个保留节点带 `childCount`
+ * （完整树中的直接子节点总数）——前端/agent 由此知道内部还有多少孩子。
+ *
+ * @param {Array<object>} nodes parseDevEcoTree 的扁平节点（DFS 序，index/parentIndex/depth）
+ * @param {number} cap 节点上限（4000 封顶）
+ * @param {boolean} [includeAttrs] 附带全部原始属性
+ * @returns {{ nodes: object[], nodeCount: number, truncated: boolean, hiddenNodes: number }}
+ */
+export function devEcoToolNodes (nodes, cap = 400, includeAttrs = false) {
+  const list = Array.isArray(nodes) ? nodes : []
+  const childCount = new Map()
+  for (const n of list) {
+    const p = n && n.parentIndex
+    if (typeof p === 'number' && p >= 0) childCount.set(p, (childCount.get(p) || 0) + 1)
+  }
+  const limit = Math.max(1, Math.min(Number(cap) || 400, 4000))
+  const items = []
+  const keptStack = [] // DFS 路径上已保留的祖先摘要（下标 = depth）
+  let omitFromDepth = Infinity // 该深度起整体省略（整棵子树）
+  let hiddenNodes = 0
+  for (const n of list) {
+    if (!n) continue
+    const depth = Math.max(0, Number(n.depth) || 0)
+    if (depth >= omitFromDepth) { hiddenNodes++; continue }
+    if (items.length >= limit) {
+      omitFromDepth = depth + 1
+      hiddenNodes++
+      const parent = keptStack[depth - 1] || null
+      if (parent) {
+        parent.childrenOmitted = true
+        parent.hiddenDirect = (parent.hiddenDirect || 0) + 1
+      }
+      continue
+    }
+    const s = devEcoNodeSummary(n, includeAttrs)
+    if (!s) continue
+    s.childCount = childCount.get(n.index) || 0
+    items.push(s)
+    keptStack.length = depth
+    keptStack.push(s)
+  }
+  return { nodes: items, nodeCount: list.length, truncated: items.length < list.length, hiddenNodes }
 }
 
 export function hitTest (nodes, x, y) {
@@ -1405,7 +1453,52 @@ export function resolveHdc (resolved, opts = {}) {
       if (existsSync(c)) return c
     } catch (_) { /* keep scanning */ }
   }
+  // macOS：Studio 的 app bundle 里不必然带 sdk/（SDK 常由 SDK Manager 下载到
+  // ~/Library/OpenHarmony/Sdk 或 ~/Library/Huawei/Sdk，目录带版本号、布局不
+  // 固定，固定子路径枚举不到）——在已解析工具链根的 sdk/ 与 SDK 库目录里
+  // 限深扫描名为 hdc 的文件。
+  if (process.platform !== 'win32') {
+    const home = process.env.HOME || ''
+    const walkRoots = []
+    if (resolved && resolved.path) walkRoots.push(join(resolved.path, 'sdk'))
+    if (process.env.DEVECO_SDK_HOME) walkRoots.push(process.env.DEVECO_SDK_HOME)
+    if (home) {
+      walkRoots.push(join(home, 'Library', 'OpenHarmony'))
+      walkRoots.push(join(home, 'Library', 'Huawei'))
+    }
+    for (const root of walkRoots) {
+      const found = walkFindHdc(root)
+      if (found) return found
+    }
+  }
   return findOnPath(HDC_EXE)
+}
+
+/**
+ * 在 root 下限深搜索名为 hdc 的可执行文件（macOS SDK 目录带版本号、布局不
+ * 固定——按目录逐层找，限深 6、限目录数 500，防大目录拖慢）。
+ */
+function walkFindHdc (root, maxDepth = 6) {
+  if (!root || !existsSync(root)) return null
+  const stack = [[root, 0]]
+  let visited = 0
+  while (stack.length && visited < 500) {
+    const [dir, depth] = stack.pop()
+    visited++
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch (_) { continue }
+    for (const e of entries) {
+      if (!e.isDirectory() && (e.name === HDC_EXE || e.name === HDC_EXE + '.exe')) return join(dir, e.name)
+    }
+    if (depth < maxDepth) {
+      for (const e of entries) {
+        if (e.isDirectory() && !e.name.startsWith('.')) stack.push([join(dir, e.name), depth + 1])
+      }
+    }
+  }
+  return null
 }
 
 /**

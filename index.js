@@ -60,8 +60,8 @@ import {
   encodeWsClientTextFrame,
   encodeWsPongFrame,
   decodeWsServerFrames,
-  devEcoNodeSummary,
   devEcoTreeLines,
+  devEcoToolNodes,
   buildHdcConnectArgs,
   buildHdcDisconnectArgs,
   parseHilogLine,
@@ -375,6 +375,9 @@ function buildHarmonyUiTreeTool (defineTool, service) {
       enabled: { type: "boolean", required: true },
       clickable: { type: "boolean", required: true },
       scrollable: { type: "boolean", required: true },
+      childCount: { type: "integer", required: true, description: "完整树中的直接子节点总数（含被省略的）" },
+      childrenOmitted: { type: "boolean", description: "true = 该节点的直接子节点因截断未返回" },
+      hiddenDirect: { type: "integer", description: "被省略的直接子节点数（childrenOmitted 时有值）" },
       padding: sidesSchema,
       margin: sidesSchema,
       borderWidth: { type: "number" },
@@ -392,7 +395,7 @@ function buildHarmonyUiTreeTool (defineTool, service) {
       package_name: { type: "string", description: "Target app package name (e.g. com.example.app). Derived from /proc/<pid>/cmdline when omitted." },
       format: { type: "string", enum: ["tree", "json"], default: "tree", description: "tree = compact indented text lines (default); json = the full node objects as JSON." },
       include_attrs: { type: "boolean", description: "Include every node's full raw attribute map (very verbose; off by default)." },
-      max_nodes: { type: "integer", description: "Maximum number of nodes returned (default 400, capped at 2000). Extra nodes are dropped and truncation is flagged." },
+      max_nodes: { type: "integer", description: "Maximum number of nodes returned (default 400, capped at 4000). Truncation drops whole subtrees — the boundary parent is flagged with childrenOmitted/hiddenDirect so no half-subtree is ever returned." },
     },
     output: {
       schema: {
@@ -427,15 +430,17 @@ function buildHarmonyUiTreeTool (defineTool, service) {
       }
       const all = Array.isArray(res.value.nodes) ? res.value.nodes : [];
       let cap = Number.isFinite(args.max_nodes) ? Math.floor(args.max_nodes) : 400;
-      cap = Math.max(1, Math.min(cap, 2000));
-      const nodes = all.slice(0, cap).map((n) => devEcoNodeSummary(n, args.include_attrs === true)).filter(Boolean);
+      cap = Math.max(1, Math.min(cap, 4000));
+      // 整棵子树省略式裁剪：绝不发半棵；childCount/childrenOmitted/hiddenDirect
+      // 告诉前端与 agent 被省略处内部还有多少直接子节点。
+      const trimmed = devEcoToolNodes(all, cap, args.include_attrs === true);
       return {
         source: "deveco",
         pid: res.value.pid,
         packageName: res.value.packageName,
-        nodeCount: all.length,
-        truncated: all.length > nodes.length,
-        nodes,
+        nodeCount: trimmed.nodeCount,
+        truncated: trimmed.truncated,
+        nodes: trimmed.nodes,
       };
     },
     isConcurrencySafe () { return true; },  // 只读、无共享状态，可并行

@@ -12,7 +12,7 @@ import {
   buildUiWindowListArgs, parseUiWindowListJson, parseUiRawDump, detectCustomComponentName,
   buildArkForwardArgs, buildLocalAbstractForwardArgs, buildForwardRemoveArgs, DEV_ECO_WS_MESSAGES, findDevEcoTreeRoot, parseDevEcoTree,
   buildDevEcoWsHandshake, isWsHandshakeAccepted, encodeWsClientTextFrame, encodeWsPongFrame, decodeWsServerFrames,
-  devEcoNodeSummary, devEcoTreeLines,
+  devEcoNodeSummary, devEcoTreeLines, devEcoToolNodes,
   buildUiRawDumpArgs, buildUiRawRecvArgs, buildUiRawCleanArgs,
   buildHdcConnectArgs, buildHdcDisconnectArgs, parseTconnResult, resolveHdc,
   hitTest, readPngSize,
@@ -788,6 +788,53 @@ test('devEcoTreeLines renders one indented line per node', () => {
   assert.equal(lines.length, 2)
   assert.equal(lines[0], 'EntryView [组件] (0,0,100,100)')
   assert.equal(lines[1], '  Text (5,5,50,30) "你好" id=title pad:1 2 3 4')
+})
+
+test('devEcoTreeLines marks parents with omitted children', () => {
+  const nodes = [
+    { depth: 0, name: 'Column', kind: 'build-in', className: 'Column', bounds: { left: 0, top: 0, right: 10, bottom: 10 }, childCount: 3, childrenOmitted: true, hiddenDirect: 2 },
+    { depth: 1, name: 'Text', kind: 'build-in', className: 'Text', bounds: { left: 0, top: 0, right: 5, bottom: 5 }, childCount: 0 },
+  ]
+  const lines = devEcoTreeLines(nodes)
+  assert.equal(lines[0], 'Column (0,0,10,10) +2 children hidden')
+  assert.equal(lines[1], '  Text (0,0,5,5)')
+})
+
+test('devEcoToolNodes drops whole subtrees and flags the boundary parent', () => {
+  // 10 节点：root(0) → a(1,d1) → a1(2,d2)/a2(2,d2)；b(4,d1)；c(6,d1) → c1(7,d2)
+  const mk = (index, depth, parentIndex, name) => ({
+    index, depth, parentIndex, name, componentName: '', className: name, kind: 'build-in',
+    text: '', devId: '', accessibilityId: String(index), bounds: { left: 0, top: 0, right: 1, bottom: 1 },
+    visible: true, enabled: true, clickable: false, scrollable: false,
+  })
+  const nodes = [
+    mk(0, 0, -1, 'root'),
+    mk(1, 1, 0, 'a'), mk(2, 2, 1, 'a1'), mk(3, 2, 1, 'a2'),
+    mk(4, 1, 0, 'b'),
+    mk(5, 1, 0, 'c'), mk(6, 2, 5, 'c1'), mk(7, 3, 6, 'c1x'), mk(8, 3, 6, 'c1y'),
+    mk(9, 1, 0, 'd'),
+  ]
+  const r = devEcoToolNodes(nodes, 5)
+  assert.equal(r.nodeCount, 10)
+  assert.equal(r.truncated, true)
+  assert.equal(r.nodes.length, 5)              // 恰好 5 个整节点，无半棵
+  // 保留的是 DFS 前缀：root, a, a1, a2, b —— c 子树与 d 整体省略
+  assert.deepEqual(r.nodes.map((n) => n.name), ['root', 'a', 'a1', 'a2', 'b'])
+  // 被省略处的最近保留祖先（root）标记：c、d 两个直接子节点被省略
+  const root = r.nodes[0]
+  assert.equal(root.childrenOmitted, true)
+  assert.equal(root.hiddenDirect, 2)
+  // 每个保留节点都有 childCount（完整树口径）
+  assert.equal(r.nodes[1].childCount, 2)  // a → a1, a2
+  assert.equal(root.childCount, 4)        // root → a, b, c, d
+  assert.equal(r.nodes[4].childCount, 0)  // b 无子节点
+  // 未截断时不标记
+  const full = devEcoToolNodes(nodes, 400)
+  assert.equal(full.truncated, false)
+  assert.equal(full.nodes.length, 10)
+  assert.equal(full.nodes.some((n) => n.childrenOmitted), false)
+  // cap 封顶 4000
+  assert.equal(devEcoToolNodes(nodes, 99999).nodes.length, 10)
 })
 
 test('parseUiRawDump tags custom components and keeps every device attribute', () => {
