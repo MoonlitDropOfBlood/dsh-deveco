@@ -155,8 +155,8 @@ export const DEFAULT_LINUX_CLT_ROOTS = [
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * 去前后空白、去单/双引号；空字符串返回 ''。
- * 不解析环境变量、不解析 ~，仅做字面清洗（与 settings UI 用户粘贴的行为对齐）。
+ * 去前后空白、去单/双引号、去尾部斜杠；mac 的 `.app` 包根补 `/Contents`。
+ * 不解析环境变量、不解析 ~，其余仅做字面清洗（与 settings UI 用户粘贴的行为对齐）。
  */
 export function normalizeStudioPath(p) {
   if (p == null) return ''
@@ -168,6 +168,11 @@ export function normalizeStudioPath(p) {
       s = s.slice(1, -1).trim()
     }
   }
+  s = s.replace(/[\\/]+$/, '')
+  // mac：DevEco Studio / Command Line Tools 常是 .app 包，工具链根在
+  // <xxx>.app/Contents——Finder 复制出来的只有 .app 根，入口就补 /Contents
+  // （已是 .app/Contents 或普通路径原样）。
+  if (/\.app$/i.test(s)) s = `${s}/Contents`
   return s
 }
 

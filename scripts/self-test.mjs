@@ -1050,6 +1050,33 @@ test('resolveHdc finds hdc under the resolved Studio/CLT root', () => {
   }
 })
 
+test('resolveHdc expands a mac .app root to <path>/Contents', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'dsh-deveco-app-'))
+  try {
+    const appRoot = join(tmp, 'Fake Studio.app')
+    const hdc = makeFakeSdkHdc(join(appRoot, 'Contents'))
+    withHdcEnv(undefined, undefined, () => {
+      // Finder 复制出来的 .app 根：工具链根在其 Contents/ 下
+      assert.equal(resolveHdc({ source: 'studio', path: appRoot }), hdc)
+      assert.equal(resolveHdc({ source: 'clt', path: appRoot }), hdc)
+      assert.equal(resolveHdc({ source: 'none' }, { extraRoots: [appRoot] }), hdc)
+      // 已带 Contents 的路径原样命中
+      assert.equal(resolveHdc({ source: 'studio', path: join(appRoot, 'Contents') }), hdc)
+    })
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('normalizeStudioPath strips quotes/slashes and completes mac .app bundles', () => {
+  assert.equal(normalizeStudioPath('/Applications/DevEco Studio.app'), '/Applications/DevEco Studio.app/Contents')
+  assert.equal(normalizeStudioPath('"/Applications/DevEco Studio.app"'), '/Applications/DevEco Studio.app/Contents')
+  assert.equal(normalizeStudioPath('/Applications/DevEco Studio.app/Contents'), '/Applications/DevEco Studio.app/Contents')
+  assert.equal(normalizeStudioPath('/Applications/DevEco Studio.app/'), '/Applications/DevEco Studio.app/Contents')
+  assert.equal(normalizeStudioPath('  D:\\DevEco Studio  '), 'D:\\DevEco Studio')
+  assert.equal(normalizeStudioPath(''), '')
+})
+
 test('resolveHdc prefers DEVECO_SDK_HOME / DEVECO_HOME over other sources', () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-deveco-hdc-'))
   try {

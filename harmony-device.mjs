@@ -1429,10 +1429,18 @@ export function findOnPath (name) {
  */
 export function resolveHdc (resolved, opts = {}) {
   const sub = ['sdk', 'default', 'openharmony', 'toolchains', HDC_EXE]
-  const fromRoot = (root) => {
+  // mac 主修复：DevEco Studio / Command Line Tools 常以 .app 包形态给出
+  // （`/Applications/DevEco Studio.app`，Finder 复制出来的就是这个），工具链
+  // 根其实在 <xxx>.app/Contents——直接拿 .app 根拼 sdk/…必然落空，先补
+  // /Contents（已是 .app/Contents 或普通目录则原样）。
+  const cleanRoot = (root) => {
     if (typeof root !== 'string' || !root.trim()) return null
     const cleaned = root.trim().replace(/[\\/]+$/, '')
-    return join(cleaned, ...sub)
+    return /\.app$/i.test(cleaned) ? `${cleaned}/Contents` : cleaned
+  }
+  const fromRoot = (root) => {
+    const base = cleanRoot(root)
+    return base ? join(base, ...sub) : null
   }
   const candidates = []
   const sdkHome = fromRoot(process.env.DEVECO_SDK_HOME)
@@ -1460,7 +1468,10 @@ export function resolveHdc (resolved, opts = {}) {
   if (process.platform !== 'win32') {
     const home = process.env.HOME || ''
     const walkRoots = []
-    if (resolved && resolved.path) walkRoots.push(join(resolved.path, 'sdk'))
+    if (resolved && resolved.path) {
+      const base = cleanRoot(resolved.path)
+      if (base) walkRoots.push(join(base, 'sdk'))
+    }
     if (process.env.DEVECO_SDK_HOME) walkRoots.push(process.env.DEVECO_SDK_HOME)
     if (home) {
       walkRoots.push(join(home, 'Library', 'OpenHarmony'))
