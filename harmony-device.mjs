@@ -308,28 +308,66 @@ export function buildUiWindowListArgs (opts = {}) {
 }
 
 /**
+ * Extract the first balanced top-level JSON array from mixed CLI stdout.
+ *
+ * devecocli appends non-JSON chatter to stdout after the JSON payload — most
+ * notably the `New docs version 1.3.6 available, run \`devecocli docs update\`
+ * to upgrade` notice observed on real runs (device list / ui window list),
+ * which arrives on **stdout**, not stderr. A whole-buffer `JSON.parse` dies on
+ * that trailing line, and `first [` … `last ]` slicing breaks the moment the
+ * chatter itself contains brackets. Bracket matching here is string- and
+ * escape-aware, so `]` inside JSON string values or inside the trailing
+ * chatter can no longer poison the carve-out.
+ *
+ * @param {string} text
+ * @returns {Array|null} Parsed array, or null when no balanced array parses.
+ */
+export function extractJsonArray (text) {
+  if (!text) return null
+  const s = String(text)
+  const start = s.indexOf('[')
+  if (start < 0) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < s.length; i++) {
+    const c = s[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inString = false
+      continue
+    }
+    if (c === '"') { inString = true; continue }
+    if (c === '[') depth++
+    else if (c === ']') {
+      depth--
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(s.slice(start, i + 1))
+          return Array.isArray(parsed) ? parsed : null
+        } catch (_) {
+          return null
+        }
+      }
+    }
+  }
+  return null
+}
+
+/**
  * Parse `devecocli ui window list --format json` output.
  *
- * Real shape: `[{ id, name, pid, displayId, focused }, ...]`. Tolerates a stray
- * non-JSON prefix (progress lines go to stderr but be safe) the same way the
- * layout parser does.
+ * Real shape: `[{ id, name, pid, displayId, focused }, ...]`. Tolerates any
+ * non-JSON chatter around the payload (docs-upgrade notices etc.) via
+ * `extractJsonArray`.
  *
  * @param {string} stdout
  * @returns {Array<{id:number,name:string,pid:number,displayId:number,focused:boolean}>}
  */
 export function parseUiWindowListJson (stdout) {
-  if (!stdout) return []
-  const text = String(stdout)
-  const start = text.indexOf('[')
-  const end = text.lastIndexOf(']')
-  if (start < 0 || end <= start) return []
-  let arr
-  try {
-    arr = JSON.parse(text.slice(start, end + 1))
-  } catch (_) {
-    return []
-  }
-  if (!Array.isArray(arr)) return []
+  const arr = extractJsonArray(stdout)
+  if (!arr) return []
   return arr
     .filter((w) => w && typeof w === 'object' && w.id !== undefined && w.id !== null)
     .map((w) => ({
@@ -339,6 +377,69 @@ export function parseUiWindowListJson (stdout) {
       displayId: Number(w.displayId) || 0,
       focused: w.focused === true,
     }))
+}
+
+/**
+ * Parse `devecocli device list` output.
+ *
+ * Preferred input is `--format json`:
+ *   [ { "name": "HUAWEI Mate 70", "serial": "55K0...", "kind": "device", "deviceType": "phone" } ]
+ *
+ * devecocli ≥1.3 pretty-prints that array **and** appends the docs-upgrade
+ * notice (`New docs version … available`) to stdout, so the payload must be
+ * carved out with `extractJsonArray` — a whole-buffer JSON.parse falls through
+ * to the table fallback, which happily turns every pretty-printed JSON line
+ * into a bogus device row (the "settings device list shows raw JSON" bug).
+ *
+ * Fallback: the human table layout (column order is Name, Serial, Kind, Type —
+ * NOT serial-first), which looks like:
+ *   - Querying connected devices…      ← spinner line, skipped
+ *   Name            Serial            Kind    Device Type
+ *   --------------  ----------------  ------  -----------
+ *   HUAWEI Mate 70  55K0225509025604  device  phone
+ *
+ * Returns an array of `{serial, name, state, type}`; skips spinner, header and
+ * separator rows. Falls back to a single-column interpretation so the UI still
+ * gets a usable list on unexpected layouts.
+ *
+ * @param {string} stdout
+ * @returns {Array<{serial:string,name:string,state:string,type:string}>}
+ */
+export function parseDeviceList (stdout) {
+  if (!stdout) return []
+  const arr = extractJsonArray(String(stdout))
+  if (arr) {
+    return arr
+      .filter((d) => d && typeof d === 'object' && d.serial)
+      .map((d) => ({
+        serial: String(d.serial),
+        name: typeof d.name === 'string' ? d.name : '',
+        state: typeof d.kind === 'string' ? d.kind : '',
+        type: typeof d.deviceType === 'string' ? d.deviceType : '',
+      }))
+  }
+  const lines = String(stdout).trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+  const out = []
+  for (const line of lines) {
+    if (/^[-\\|/]\s/.test(line)) continue;          // spinner/progress rows
+    if (/^[-=\s]+$/.test(line)) continue;           // separator rows (incl. spaced dashes)
+    if (/^Name\s+Serial/i.test(line)) continue;     // header (new CLI)
+    if (/^Device\s+ID/i.test(line)) continue;       // header (legacy CLI)
+    const cols = line.split(/\s{2,}|\t+/).filter((c) => c !== '');
+    if (cols.length === 0) continue;
+    if (cols.length >= 2) {
+      // Real table order: Name, Serial, Kind, Device Type.
+      out.push({
+        serial: cols[1],
+        name: cols[0],
+        state: cols[2] || '',
+        type: cols[3] || '',
+      });
+    } else {
+      out.push({ serial: cols[0], name: '', state: '', type: '' });
+    }
+  }
+  return out.filter((d) => d.serial)
 }
 
 /**
@@ -473,17 +574,8 @@ function windowIdFromNode (n) {
 }
 
 export function parseUiLayoutJson (stdout) {  if (!stdout) return []
-  const text = String(stdout)
-  const start = text.indexOf('[')
-  const end = text.lastIndexOf(']')
-  if (start < 0 || end <= start) return []
-  let roots
-  try {
-    roots = JSON.parse(text.slice(start, end + 1))
-  } catch (_) {
-    return []
-  }
-  if (!Array.isArray(roots)) return []
+  const roots = extractJsonArray(String(stdout))
+  if (!roots) return []
   const nodes = []
   // Read a box-model side (padding/margin) that may be a number or a
   // [t, r, b, l] / [v, h] / scalar triple in the layout JSON. Returns
@@ -682,7 +774,12 @@ export function parseUiRawDump (input) {
   const str = (v) => (typeof v === 'string' ? v : (v === undefined || v === null ? '' : String(v)))
   const bool = (v, dflt = false) => {
     const s = str(v).toLowerCase()
-    if (s === 'true' || s === '1') return true
+    // Explicit negatives must NOT fall through to the default — uitest dump
+    // attribute values are strings, and `visible: "false"` used to be parsed
+    // as `true` because only "true"/"1" were recognised (the invisible-node
+    // filtering bug).
+    if (s === 'true' || s === '1' || s === 'yes') return true
+    if (s === 'false' || s === '0' || s === 'no') return false
     return dflt
   }
   const num = (v, dflt = 0) => {
@@ -703,6 +800,13 @@ export function parseUiRawDump (input) {
   const visit = (node, depth, parentIndex, windowId, ownerComponent) => {
     if (!node || typeof node !== 'object') return
     const a = (node.attributes && typeof node.attributes === 'object') ? node.attributes : node
+    // 不可见节点「存根」语义（用户决策）：只看节点自身、不看后代（单次 DFS，
+    // 高效）。自身可见 → 正常保留并递归子树；自身不可见 → **保留该节点本身**
+    // （如 Navigation 压栈后被整体标 Hidden 的 NavBar 主页——页面活着，只是
+    // 被盖住，必须在树上可见、属性可查），但其**所有子节点剪掉**（内容是纯
+    // 噪音）。缺失 visible 属性默认可见。树展示、属性面板与 agent 工具共用
+    // 这份解析结果；截图命中（hitTest）另行跳过 visible:false 的存根。
+    const selfVisible = bool(a.visible, true)
     const bounds = parseBounds(str(a.bounds))
     const origRaw = str(a.origBounds)
     const origBounds = origRaw ? parseBounds(origRaw) : bounds
@@ -726,15 +830,18 @@ export function parseUiRawDump (input) {
     }
     const index = nodes.length
     const kids = Array.isArray(node.children) ? node.children : []
-    // 内容区 = 所有子节点真实矩形的并集。它不是「声明的 padding」，但与
+    // 内容区 = 所有**可见**子节点真实矩形的并集。它不是「声明的 padding」，但与
     // origBounds 的差就是**实测**的内缩（容器未填满 / 滚动溢出时会偏大或越界，
     // UI 会据实标注）。uitest 不输出声明值，这是唯一可获得的真实几何。
+    // 不可见存根自身不渲染，不测算内容区。
     let contentBox = null
-    if (kids.length > 0) {
+    if (selfVisible && kids.length > 0) {
       let minL = Infinity, minT = Infinity, maxR = -Infinity, maxB = -Infinity
       for (const c of kids) {
         const ca = (c && c.attributes && typeof c.attributes === 'object') ? c.attributes : c
         if (!ca || typeof ca !== 'object') continue
+        // 不可见子节点不参与内容区并集——它不渲染，计入会虚增实测内缩。
+        if (!bool(ca.visible, true)) continue
         const cr = str(ca.origBounds) ? parseBounds(str(ca.origBounds)) : parseBounds(str(ca.bounds))
         if (!Number.isFinite(cr.left) || !Number.isFinite(cr.top)) continue
         minL = Math.min(minL, cr.left); minT = Math.min(minT, cr.top)
@@ -846,6 +953,8 @@ export function parseUiRawDump (input) {
       rawAttrs,
       attrs
     })
+    // 自身不可见：到此为止——保留存根，不递归子节点。
+    if (!selfVisible) return
     for (const c of kids) {
       visit(c, depth + 1, index, win, ownerComponent || detectCustomComponentName(id, key))
     }
@@ -1027,6 +1136,15 @@ export function parseDevEcoTree (root, windowId = 0) {
   const visit = (node, depth, parentIndex) => {
     if (!node || typeof node !== 'object') return
     const attrs = node.$attrs && typeof node.$attrs === 'object' ? node.$attrs : {}
+    // 可见性「存根」语义（与 uitest 源一致，用户决策）：只看节点自身。自身
+    // 不可见（枚举串 Visibility.Hidden / Visibility.None 归一化后比较、显式
+    // false、节点级 visible:false 任一命中）→ **保留该节点本身**（如
+    // Navigation 压栈后被整体标 Hidden 的 NavBar 主页），但其所有子节点剪掉。
+    // 缺失 visibility 默认可见。单次 DFS，无后代回溯。
+    const visibilityEnum = toStr(attrs.visibility ?? '').replace(/^Visibility\./i, '').toLowerCase()
+    const nodeVisible = node.visible !== false
+      ? !(visibilityEnum === 'hidden' || visibilityEnum === 'none' || toStr(attrs.visible) === 'false')
+      : false
     const bounds = rectToBounds(node.$rect ?? node.rect ?? attrs.rect) ||
       { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }
     // 组件名 / Builder 名：viewTag（JsView 的名字）→ $attrs.label → $attrs.inspectorLabel
@@ -1038,11 +1156,7 @@ export function parseDevEcoTree (root, windowId = 0) {
     const rawAttrs = {}
     for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null) rawAttrs[k] = typeof v === 'object' ? JSON.stringify(v) : toStr(v)
     // 真实数据语义（实测）：Text 文本在 $attrs.content、Button 在 $attrs.label；
-    // visibility 是枚举串 "Visibility.Visible|Hidden|None"；focused/enabled 是布尔。
-    const visibilityEnum = toStr(attrs.visibility ?? '')
-    const visible = node.visible !== false
-      ? !(visibilityEnum === 'Visibility.Hidden' || visibilityEnum === 'Visibility.None' || toStr(attrs.visible) === 'false')
-      : false
+    // focused/enabled 是布尔。
     const devId = toStr(attrs.id ?? '')
     nodes.push({
       index: nodes.length,
@@ -1073,7 +1187,7 @@ export function parseDevEcoTree (root, windowId = 0) {
       borderRadius: toBorderRadius(attrs.borderRadius ?? attrs.cornerRadius),
       borderColor: toStr(attrs.borderColor ?? ''),
       opacity: toNumOrUndefined(attrs.opacity) ?? 1,
-      visible,
+      visible: nodeVisible,
       enabled: attrs.enabled === undefined ? true : (attrs.enabled === true || truthy(attrs.enabled)),
       focused: attrs.focused === true || truthy(attrs.focused),
       selected: false,
@@ -1101,6 +1215,8 @@ export function parseDevEcoTree (root, windowId = 0) {
     })
     const kids = Array.isArray(node.$children) ? node.$children
       : (Array.isArray(node.children) ? node.children : [])
+    // 自身不可见：保留存根，不递归子节点。
+    if (!nodeVisible) return
     for (const c of kids) visit(c, depth + 1, nodes.length - 1)
   }
   visit(tree, 0, -1)
@@ -1355,6 +1471,9 @@ export function hitTest (nodes, x, y) {
   for (const n of nodes) {
     const b = n && n.bounds
     if (!b) continue
+    // 不可见存根（如 Navigation 压栈后被标 Hidden 的 NavBar 主页）矩形往往
+    // 覆盖整屏，且内容并不在当前画面上——截图点击命中必须跳过它们。
+    if (n.visible === false) continue
     if (x < b.left || x > b.right || y < b.top || y > b.bottom) continue
     const area = Math.max(0, b.right - b.left) * Math.max(0, b.bottom - b.top)
     if (area < bestArea) {

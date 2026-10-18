@@ -10,6 +10,7 @@ import {
   buildHilogArgs, buildHilogFollowArgs,
   buildUiDumpArgs, buildUiScreenshotArgs, buildUiTapArgs, buildUiSwipeArgs, buildUiTextArgs,
   buildUiWindowListArgs, parseUiWindowListJson, parseUiRawDump, detectCustomComponentName,
+  parseDeviceList, extractJsonArray,
   buildArkForwardArgs, buildLocalAbstractForwardArgs, buildForwardRemoveArgs, DEV_ECO_WS_MESSAGES, findDevEcoTreeRoot, parseDevEcoTree,
   buildDevEcoWsHandshake, isWsHandshakeAccepted, encodeWsClientTextFrame, encodeWsPongFrame, decodeWsServerFrames,
   devEcoNodeSummary, devEcoTreeLines, devEcoToolNodes,
@@ -233,6 +234,9 @@ test('hitTest picks the smallest (deepest) node containing the point', () => {
   // point outside everything -> null
   assert.equal(hitTest(nodes, 500, 500), null)
   assert.equal(hitTest([], 0, 0), null)
+  // 不可见存根（如压栈后被标 Hidden 的 NavBar 主页，全屏矩形）不参与命中
+  const withStub = [...nodes, { index: 9, depth: 0, parentIndex: -1, className: 'NavBar', visible: false, bounds: { left: 0, top: 0, right: 100, bottom: 200 } }]
+  assert.equal(hitTest(withStub, 30, 30).className, 'Btn')
 })
 
 test('readPngSize reads IHDR dimensions and rejects non-PNG', () => {
@@ -322,6 +326,88 @@ test('buildUiWindowListArgs and parseUiWindowListJson', () => {
   assert.deepEqual(parseUiWindowListJson('[{"name":"no-id"}]'), [])
   // focused defaults to false rather than truthy-string
   assert.equal(parseUiWindowListJson('[{"id":3,"focused":"yes"}]')[0].focused, false)
+})
+
+test('parseDeviceList survives pretty JSON + trailing docs-upgrade notice on stdout', () => {
+  // Exact real-world capture (devecocli 1.3.6, Windows): `device list --format
+  // json` pretty-prints the array AND appends the docs notice to STDOUT. The
+  // old whole-buffer JSON.parse died on the notice and the table fallback then
+  // rendered every raw JSON line as a device row (the "device list shows full
+  // JSON" settings bug).
+  const realWorld = [
+    '[',
+    '  {',
+    '    "name": "HUAWEI Mate 70",',
+    '    "serial": "192.168.3.6:40691",',
+    '    "kind": "device",',
+    '    "deviceType": "phone"',
+    '  }',
+    ']',
+    '',
+    'New docs version 1.3.6 available, run `devecocli docs update` to upgrade',
+    '',
+  ].join('\n')
+  assert.deepEqual(parseDeviceList(realWorld), [
+    { serial: '192.168.3.6:40691', name: 'HUAWEI Mate 70', state: 'device', type: 'phone' },
+  ])
+
+  // Single-line compact JSON still parses.
+  assert.deepEqual(
+    parseDeviceList('[{"name":"HUAWEI Mate 70","serial":"55K0225509025604","kind":"device","deviceType":"phone"}]'),
+    [{ serial: '55K0225509025604', name: 'HUAWEI Mate 70', state: 'device', type: 'phone' }]
+  )
+
+  // Notice BEFORE the JSON parses too (banner-style chatter).
+  assert.equal(
+    parseDeviceList('New docs version 1.3.6 available, run `devecocli docs update` to upgrade\n' + realWorld).length,
+    1
+  )
+
+  // Empty array + notice → no phantom rows.
+  assert.deepEqual(parseDeviceList('[]\nNew docs version 1.3.6 available, run `devecocli docs update` to upgrade'), [])
+
+  // Trailing chatter containing brackets must not leak into the carve-out.
+  assert.equal(parseDeviceList('[{"serial":"A1"}]\nsee [docs] for details').length, 1)
+  assert.equal(parseDeviceList('[{"serial":"A1"}]\nsee [docs] for details')[0].serial, 'A1')
+
+  // JSON string values containing ] and escaped quotes stay intact.
+  const tricky = '[{"name":"weird \\"name\\"]x","serial":"S1","kind":"device","deviceType":"phone"}]'
+  assert.deepEqual(parseDeviceList(tricky), [
+    { serial: 'S1', name: 'weird "name"]x', state: 'device', type: 'phone' },
+  ])
+})
+
+test('parseDeviceList falls back to the human table layout', () => {
+  const table = [
+    '- Querying connected devices…',
+    'Name            Serial            Kind    Device Type',
+    '--------------  ----------------  ------  -----------',
+    'HUAWEI Mate 70  55K0225509025604  device  phone',
+  ].join('\n')
+  assert.deepEqual(parseDeviceList(table), [
+    { serial: '55K0225509025604', name: 'HUAWEI Mate 70', state: 'device', type: 'phone' },
+  ])
+  // Legacy header + single-column rows.
+  assert.deepEqual(
+    parseDeviceList('Device ID\n55K0225509025604'),
+    [{ serial: '55K0225509025604', name: '', state: '', type: '' }]
+  )
+  // No output → no devices.
+  assert.deepEqual(parseDeviceList(''), [])
+  assert.deepEqual(parseDeviceList('not json, no table'), [{ serial: 'not json, no table', name: '', state: '', type: '' }])
+})
+
+test('extractJsonArray carves the first balanced array only', () => {
+  assert.deepEqual(extractJsonArray('[1,2,3]'), [1, 2, 3])
+  assert.deepEqual(extractJsonArray('noise [1,2] tail'), [1, 2])
+  assert.deepEqual(extractJsonArray('[[1],[2]]'), [[1], [2]])
+  assert.deepEqual(extractJsonArray('first [1] second [2,3]'), [1])
+  assert.deepEqual(extractJsonArray('x [1]'), [1])
+  assert.equal(extractJsonArray('no brackets'), null)
+  assert.equal(extractJsonArray('{"obj":1}'), null)
+  assert.equal(extractJsonArray(''), null)
+  assert.equal(extractJsonArray(null), null)
+  assert.equal(extractJsonArray('[1,2'), null) // unbalanced → null, never a partial parse
 })
 
 test('buildUiRawDumpArgs / recv / clean drive `hdc shell uitest dumpLayout`', () => {
@@ -696,9 +782,71 @@ test('parseDevEcoTree parses real-device attribute shapes (vp units / JSON margi
   assert.equal(t.visible, true)
   assert.equal(t.enabled, true)
   assert.equal(t.focused, true)
-  // 枚举隐藏 → visible false
+  // 枚举隐藏 → 存根语义：节点本身保留、子节点全剪（用户决策：如 NavBar 主页
+  // 被 Navigation 压栈后整体标 Hidden，父节点必须仍可见）
   const hidden = parseDevEcoTree({ $type: 'root', $children: [{ $type: 'Row', $ID: '1', $rect: '[0,0][1,1]', $attrs: { visibility: 'Visibility.Hidden' }, $children: [] }] })
+  assert.equal(hidden.length, 2) // root + Hidden 存根
   assert.equal(hidden[1].visible, false)
+})
+
+test('parseDevEcoTree keeps invisible nodes as stubs, prunes their subtrees', () => {
+  const text = (id, top, attrs = {}, kids = []) =>
+    ({ $type: 'Text', $ID: id, $rect: `[0,${top}][50,${top + 20}]`, $attrs: attrs, $children: kids })
+  const tree = {
+    $type: 'root',
+    $children: [
+      {
+        $type: 'Column', $ID: 'a', $rect: '[0,0][100,100]', $attrs: {},
+        $children: [
+          // 隐藏节点：自身保留为存根，其后代（无论自身标记如何）全部剪掉
+          text('t1', 0, { visibility: 'Visibility.Hidden' }, [text('s1', 0), text('s2', 0, {}, [text('s3', 0)])]),
+          text('t2', 30, { visibility: 'Visibility.None' }),
+          text('t3', 60, { visibility: 'Visibility.Visible' }, [text('s4', 60)]),
+          text('t4', 90, { visible: 'false' }),
+          text('t5', 120), // 缺失 visibility → 默认可见
+        ],
+      },
+      { $type: 'Row', $ID: 'nv', $rect: '[0,0][1,1]', visible: false, $children: [] }, // 节点级布尔 false → 存根
+    ],
+  }
+  const nodes = parseDevEcoTree(tree)
+  const ids = nodes.map((n) => n.accessibilityId)
+  // t1/t2/t4/nv 是存根（保留）；t1 的后代 s1/s2/s3 剪掉；可见的 t3 连同子节点保留
+  assert.deepEqual(ids, ['', 'a', 't1', 't2', 't3', 's4', 't4', 't5', 'nv'])
+  assert.equal(nodes[2].visible, false) // t1 存根带 visible:false
+  assert.equal(nodes[4].visible, true)
+  // 剪枝后 index/depth 保持连续（parseDevEcoTree 的 parentIndex 是既有的
+  // 链式语义：指向递归时的上一入列节点——t2 前面是 t1 存根，故 p=2）
+  assert.equal(nodes[3].parentIndex, 2)
+  assert.equal(nodes[3].depth, 2)
+})
+
+test('parseUiRawDump keeps visible="false" nodes as stubs and prunes their subtrees', () => {
+  const mk = (id, visible, bounds, kids = []) => {
+    const attributes = { type: 'Row', id, bounds, hostWindowId: '11' }
+    if (visible !== undefined) attributes.visible = visible
+    return { attributes, children: kids }
+  }
+  const doc = {
+    attributes: { type: 'WindowScene', id: 'session11', bounds: '[0,0][100,200]' },
+    children: [
+      mk('v1', 'true', '[0,0][100,50]'),
+      // 不可见存根：自身保留（矩形故意越界到 bottom=300，contentBox 必须排除），
+      // 其可见后代 hc1 也一并剪掉（父不可见 → 子节点不保留）
+      mk('h1', 'false', '[0,60][100,300]', [mk('hc1', 'true', '[0,60][50,80]')]),
+      mk('v2', undefined, '[0,130][100,160]'), // 缺失 visible → 默认可见
+    ],
+  }
+  const nodes = parseUiRawDump(doc)
+  assert.deepEqual(nodes.map((n) => n.resourceId), ['session11', 'v1', 'h1', 'v2'])
+  assert.ok(!nodes.some((n) => n.resourceId === 'hc1'))
+  assert.equal(nodes[2].visible, false) // h1 存根带 visible:false
+  assert.equal(nodes[2].index, 2)
+  assert.equal(nodes[2].parentIndex, 0)
+  // 不可见存根不测算内容区
+  assert.equal(nodes[2].contentBox, undefined)
+  // 可见父的 contentBox = 可见子节点矩形并集（h1 的 [0,60][100,300] 排除，bottom=160 而非 300）
+  assert.deepEqual(nodes[0].contentBox, { left: 0, top: 0, right: 100, bottom: 160, width: 100, height: 160 })
 })
 
 test('DevEco raw WS helpers build the minimal Java-WebSocket handshake', () => {

@@ -65,6 +65,7 @@ import {
   buildHdcConnectArgs,
   buildHdcDisconnectArgs,
   parseHilogLine,
+  parseDeviceList,
   parseUiLayoutJson,
   parseUiRawDump,
   parseUiWindowListJson,
@@ -171,66 +172,6 @@ function ok(value) {
 
 function err(code, message) {
   return { ok: false, error: { code: String(code || "unknown"), message: String(message || "") } };
-}
-
-/**
- * Parse `devecocli device list` output.
- *
- * Preferred input is `--format json`:
- *   [ { "name": "HUAWEI Mate 70", "serial": "55K0...", "kind": "device", "deviceType": "phone" } ]
- *
- * Fallback: the human table layout (column order is Name, Serial, Kind, Type —
- * NOT serial-first), which looks like:
- *   - Querying connected devices…      ← spinner line, skipped
- *   Name            Serial            Kind    Device Type
- *   --------------  ----------------  ------  -----------
- *   HUAWEI Mate 70  55K0225509025604  device  phone
- *
- * Returns an array of `{serial, name, state, type}`; skips spinner, header and
- * separator rows. Falls back to a single-column interpretation so the UI still
- * gets a usable list on unexpected layouts.
- */
-function parseDeviceList(stdout) {
-  if (!stdout) return [];
-  const text = String(stdout).trim();
-  // JSON fast-path (`device list --format json`).
-  if (text.startsWith("[")) {
-    try {
-      const arr = JSON.parse(text);
-      if (Array.isArray(arr)) {
-        return arr
-          .filter((d) => d && typeof d === "object" && d.serial)
-          .map((d) => ({
-            serial: String(d.serial),
-            name: typeof d.name === "string" ? d.name : "",
-            state: typeof d.kind === "string" ? d.kind : "",
-            type: typeof d.deviceType === "string" ? d.deviceType : "",
-          }));
-      }
-    } catch (_) { /* fall through to table parsing */ }
-  }
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  const out = [];
-  for (const line of lines) {
-    if (/^[-\\|/]\s/.test(line)) continue;          // spinner/progress rows
-    if (/^[-=\s]+$/.test(line)) continue;           // separator rows (incl. spaced dashes)
-    if (/^Name\s+Serial/i.test(line)) continue;     // header (new CLI)
-    if (/^Device\s+ID/i.test(line)) continue;       // header (legacy CLI)
-    const cols = line.split(/\s{2,}|\t+/).filter((c) => c !== "");
-    if (cols.length === 0) continue;
-    if (cols.length >= 2) {
-      // Real table order: Name, Serial, Kind, Device Type.
-      out.push({
-        serial: cols[1],
-        name: cols[0],
-        state: cols[2] || "",
-        type: cols[3] || "",
-      });
-    } else {
-      out.push({ serial: cols[0], name: "", state: "", type: "" });
-    }
-  }
-  return out.filter((d) => d.serial);
 }
 
 /**
@@ -388,7 +329,7 @@ function buildHarmonyUiTreeTool (defineTool, service) {
   };
   return defineTool({
     name: "harmony_ui_tree",
-    description: "Fetch the ArkUI component tree of a HarmonyOS app on a connected device/emulator through the DevEco development-debug channel — the same data DevEco Studio's ArkUI Inspector shows, including component/Builder names (viewTag) and declared padding/margin/border values (uitest dumps lack these). Requires a debuggable app; the app-side inspector socket is single-client, so close DevEco Studio's ArkUI Inspector panel first if it is open (the error message lists all prerequisites). By default targets the foreground window's app. Returns an indented tree of nodes with bounds, text and box-model declarations.",
+    description: "Fetch the ArkUI component tree of a HarmonyOS app on a connected device/emulator through the DevEco development-debug channel — the same data DevEco Studio's ArkUI Inspector shows, including component/Builder names (viewTag) and declared padding/margin/border values (uitest dumps lack these). Invisible nodes (visible=false / Visibility.Hidden / Visibility.None) are kept as leaf stubs (visible=false) while their whole subtrees are pruned — e.g. a home page hidden behind a pushed NavDestination stays inspectable as one stub row. Requires a debuggable app; the app-side inspector socket is single-client, so close DevEco Studio's ArkUI Inspector panel first if it is open (the error message lists all prerequisites). By default targets the foreground window's app. Returns an indented tree of nodes with bounds, text and box-model declarations.",
     parameters: {
       device: { type: "string", description: "Device/emulator serial as listed by hdc targets (e.g. 127.0.0.1:5555). Omit for the default target." },
       pid: { type: "integer", description: "Target app process id. Omit to use the foreground window's app." },

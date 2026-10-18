@@ -1375,6 +1375,9 @@ window.__ModuleLoader__.load({
           + (selected === n.index ? " selected" : "")
           + (n.componentName ? " isComponent" : "")
           + (n.visible === false ? " isHidden" : "");
+        // 不可见存根（visible:false，如 Navigation 压栈后被标 Hidden 的 NavBar
+        // 主页）在 Host 解析层保留节点本身、剪掉其全部子节点——这里变暗提示
+        // 它当前不在画面上。
         // 组件名优先：能提取就只显示组件名（`ImageKnifePro_1447` → `ImageKnifePro`）；
         // 提取不到的 compid **照 DevEco 原样显示**（`left`、`linearGradient_bg`、
         // `task_title`……否则名字就"显示不出来"）；再没有才显示真实类型（含 `__Common__`）。

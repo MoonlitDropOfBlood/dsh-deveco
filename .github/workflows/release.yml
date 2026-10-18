@@ -102,7 +102,7 @@ jobs:
             - **`harmony_ui_tree` agent 工具**（`ctx.tools`）：对话里的 agent 直接取 ArkUI 组件树
             - **.ets 文件查看器**：ArkTS 语法高亮（方法/类型/装饰器/声明式 UI 组件着色，对标 DevEco Studio）
             - 设置页 → HarmonyOS Suite：DevEco Studio / Command Line Tools 路径管理（三平台自发现 + 互斥）+ 设备管理（USB / 网络 `hdc tconn`）
-            - 21 个 Remote 方法 · 82 个单元测试
+            - 21 个 Remote 方法 · 91 个单元测试
 
             ### 📦 安装
             ```bash
