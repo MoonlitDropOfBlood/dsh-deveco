@@ -1,6 +1,6 @@
 {
   "name": "@duke-dsh-plugins/dsh-deveco",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "DSH 正式 bundle 插件：在官方右侧边栏（sidebarRightTabs）注册「HiLog 检查器」与「ArkUI Inspector」两个独立页面 Tab（HiLog 实时流 + 过滤；ArkUI UI 树 dump / 截图 / tap / swipe / text），并提供 .ets 文件查看器（ArkTS 语法高亮，内容经官方 remote.workspaceFiles 分页读取）；路径配置为设置根区的「HarmonyOS Suite」页面（settings.section；DevEco Studio / HarmonyOS Command Line Tools，含三平台自发现、两者互斥、CLT 最低 26.0.0 校验；若 PATH 存在 devecocli 则优先使用，忽略配置路径）。",
   "type": "module",
   "main": "index.js",
@@ -44,7 +44,7 @@
     "arkui"
   ],
   "engines": {
-    "dsh": "^0.2.0-rc.1"
+    "dsh": "^0.2.0-rc.1 || ^0.2.1-rc.0"
   },
   "dsh": {
     "bundle": {
@@ -56,8 +56,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
-    "@deepseek-ai/dsh-typert-protocol": "^0.2.0-rc.1"
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1 || ^0.2.1-rc.0",
+    "@deepseek-ai/dsh-typert-protocol": "^0.2.0-rc.1 || ^0.2.1-rc.0"
   },
   "dependencies": {
     "zod": "^4.4.3"
