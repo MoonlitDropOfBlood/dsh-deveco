@@ -1203,15 +1203,20 @@ window.__ModuleLoader__.load({
         setReveal({ index: hit.index, at: Date.now() });
       };
 
-      // Scroll the selected row into view after a screenshot pick. Runs after
-      // the ancestor expansion has re-rendered, so the row actually exists.
+      // Scroll the selected row into view after a screenshot pick. `reveal` is a
+      // fresh object per click, so this runs exactly once per pick — after the
+      // click's batched re-render (ancestor expansion + selection), when the row
+      // already exists. Deliberately NOT keyed on uiNodes/windowId/collapsed:
+      // those deps made every later expand/collapse re-scroll the tree back to
+      // the revealed row ("树自动跳走"). Auto-scroll belongs to the screenshot
+      // pick only — expanding unrelated nodes must not move the view（用户决策）.
       React.useEffect(() => {
         if (!reveal || !treeRef.current) return;
         const row = treeRef.current.querySelector('[data-node-index="' + reveal.index + '"]');
         if (row && typeof row.scrollIntoView === "function") {
           row.scrollIntoView({ block: "nearest", behavior: "smooth" });
         }
-      }, [reveal, uiNodes, windowId, collapsed]);
+      }, [reveal]);
 
       const selectNode = (n) => { setSelected(n.index); };
 
