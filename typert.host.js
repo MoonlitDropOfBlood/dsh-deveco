@@ -352,6 +352,20 @@ const ipDisconnectValueSchema = z
   })
   .readonly();
 
+const _harmonyDevEco_deviceProcessPids_parameter_0$schema = z
+  .object({
+    device: z.string().optional().readonly(),
+    bundle: z.string().readonly(),
+  })
+  .readonly();
+
+const processPidsValueSchema = z
+  .object({
+    bundle: z.string().readonly(),
+    pids: z.array(z.number()).readonly(),
+  })
+  .readonly();
+
 const _harmonyDevEco_hilogList_parameter_0$schema = z
   .object({
     device: z.string().optional().readonly(),
@@ -583,6 +597,10 @@ export const TYPERT = {
       "Disconnect a TCP device target via `hdc tconn <ip>:<port> -remove`.",
       "/**\n * Disconnect a TCP device target via `hdc tconn <ip>:<port> -remove`.\n * @param request - `{ ip, port }`; port is REQUIRED (hdc has no default).\n */"),
 
+    iv("deviceProcessPids", _harmonyDevEco_deviceProcessPids_parameter_0$schema, processPidsValueSchema,
+      "Resolve the PIDs of a bundle's processes via `hdc shell ps -ef` (exact + `:suffix` match). HiLog lines carry no bundle name, so the client-side real-time bundle filter maps bundle→pids through this.",
+      "/**\n * Resolve the PIDs of a bundle's processes on the device.\n * @param request - `{ bundle }` exact bundle name, plus optional `device`.\n * @returns `{ bundle, pids }` — empty pids when the app is not running.\n */"),
+
     iv("hilogList", _harmonyDevEco_hilogList_parameter_0$schema, hilogListSchema,
       "Read a one-shot snapshot of HiLog lines matching the given filters.",
       "/**\n * Read a one-shot snapshot of HiLog lines matching the given filters.\n * @param request - optional device/level/bundle/keyword/tail/from/to filters.\n */"),
@@ -714,6 +732,14 @@ export const TYPERT = {
             summary: "Disconnect a TCP device target via `hdc tconn <ip>:<port> -remove`.",
             jsDoc:
               "/**\n * Disconnect a TCP device target via `hdc tconn <ip>:<port> -remove`.\n * @param request - `{ ip, port }`; port is REQUIRED (hdc has no default).\n * @returns `{ address, disconnected, message, hdc }`.\n */",
+          },
+          {
+            kind: "method",
+            name: "deviceProcessPids",
+            signature: "@Remote('deviceProcessPids') async deviceProcessPids(request: HarmonyDevEcoDeviceProcessPidsRequest): Promise<HarmonyDevEcoDeviceProcessPidsResult>",
+            summary: "Resolve the PIDs of a bundle's processes (`hdc shell ps -ef`); powers the real-time bundle filter.",
+            jsDoc:
+              "/**\n * Resolve the PIDs of a bundle's processes on the device.\n * @param request - `{ bundle }` exact bundle name, plus optional `device`.\n * @returns `{ bundle, pids }` — empty pids when the app is not running.\n */",
           },
           {
             kind: "method",

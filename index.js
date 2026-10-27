@@ -64,6 +64,7 @@ import {
   devEcoToolNodes,
   buildHdcConnectArgs,
   buildHdcDisconnectArgs,
+  parseProcessPids,
   parseHilogLine,
   parseDeviceList,
   parseUiLayoutJson,
@@ -423,6 +424,7 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     markRemoteMethod(this, "deviceInfo", "deviceInfo");
     markRemoteMethod(this, "deviceConnectIp", "deviceConnectIp");
     markRemoteMethod(this, "deviceDisconnectIp", "deviceDisconnectIp");
+    markRemoteMethod(this, "deviceProcessPids", "deviceProcessPids");
     markRemoteMethod(this, "hilogList", "hilogList");
     markRemoteMethod(this, "hilogStreamStart", "hilogStreamStart");
     markRemoteMethod(this, "hilogStreamRead", "hilogStreamRead");
@@ -757,6 +759,30 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       message: out.value,
       hdc,
     });
+  }
+
+  /**
+   * Resolve the PIDs of a bundle's processes on the device (`hdc shell ps -ef`
+   * + host-side exact-match parse). HiLog lines carry no bundle name (only a
+   * pid), so the client-side real-time bundle filter needs this mapping — it
+   * lets the UI filter by bundle WITHOUT restarting the log stream.
+   */
+  async deviceProcessPids(request) {
+    const bundle = request && typeof request.bundle === "string" ? request.bundle.trim() : "";
+    if (!bundle) return err("invalid-request", "bundle required");
+    const hdc = this._resolveHdcPath();
+    if (!hdc) {
+      return err("no-hdc", "未找到 hdc 可执行文件（包名过滤依赖 SDK 自带的 hdc：请先配置 Studio/CLT 路径，或将 hdc 加入 PATH）");
+    }
+    const targs = request && request.device ? ["-t", String(request.device)] : [];
+    try {
+      const r = await execHdc(hdc, [...targs, "shell", "ps -ef"], { timeout: 10000 });
+      const pids = parseProcessPids(`${r.stdout || ""}\n${r.stderr || ""}`, bundle);
+      return ok({ bundle, pids });
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      return err("hdc-failed", `读取设备进程列表失败：${msg}`);
+    }
   }
 
   // ---- HiLog ---------------------------------------------------------------

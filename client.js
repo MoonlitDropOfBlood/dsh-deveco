@@ -80,6 +80,13 @@ window.__ModuleLoader__.load({
 .harm-log-tag{flex:none;color:var(--dsw-alias-label-secondary);font-size:11px;min-width:80px}
 .harm-log-msg{flex:1;color:var(--dsw-alias-label-primary);word-break:break-word;white-space:pre-wrap;min-width:0}
 .harm-log-raw{flex:1;color:var(--dsw-alias-label-tertiary);font-style:italic;word-break:break-word}
+.harm-logStat{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.6;padding:2px 2px 6px}
+.harm-logStat b{color:var(--dsw-alias-label-secondary);font-weight:600;font-variant-numeric:tabular-nums}
+/* 日志内查找（Ctrl+F 接管）：命中片段 <mark> + 当前命中行整行描边 */
+.harm-findBar{display:flex;align-items:center;gap:6px}
+.harm-findBar .harm-propsSearchInput{height:24px}
+.harm-log-msg mark,.harm-log-tag mark,.harm-log-raw mark{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#f5b942) 45%,transparent);color:inherit;border-radius:2px}
+.harm-log-line.harm-findCur{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4a7dff) 12%,transparent);outline:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary,#4a7dff) 60%,transparent)}
 .harm-tree{display:flex;flex-direction:column;gap:2px;overflow-y:auto;max-height:50vh;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px;background:var(--dsw-alias-bg-layer-1)}
 .harm-tree-node{padding:5px 7px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;border-radius:5px;cursor:pointer;line-height:18px;color:var(--dsw-alias-label-primary);border:1px solid transparent;display:flex;gap:8px;align-items:baseline}
 .harm-tree-node:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.08))}
@@ -140,6 +147,13 @@ window.__ModuleLoader__.load({
 .harm-nodeFlag{font-size:9px;line-height:14px;padding:0 4px;border-radius:4px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-tertiary)}
 .harm-nodeFlag-ok{background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#2fb37d) 20%,transparent);color:var(--dsw-alias-state-success-primary,#2fb37d)}
 .harm-nodeFlag-hit{background:color-mix(in srgb,var(--dsw-alias-button-info-fill,#4a7dff) 22%,transparent);color:var(--dsw-alias-button-info-fill,#4a7dff)}
+/* 组件树搜索：命中片段 <mark> 高亮（与属性面板同配色）；祖先行弱化为路径上下文 */
+.harm-treeSearch{flex:none;display:flex;align-items:center;gap:6px}
+.harm-treeSearch .harm-propsSearchInput{height:24px}
+.harm-node.isPath .harm-nodeTag{color:var(--dsw-alias-label-tertiary);font-weight:400}
+.harm-node.isPath .harm-nodeType,.harm-node.isPath .harm-nodeText,.harm-node.isPath .harm-nodeId{opacity:.6}
+.harm-node.isPath.selected .harm-nodeTag{color:var(--dsw-alias-label-primary);font-weight:600}
+.harm-nodeTag mark,.harm-nodeType mark,.harm-nodeText mark,.harm-nodeId mark{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#f5b942) 45%,transparent);color:inherit;border-radius:2px}
 /* 折叠箭头 */
 .harm-caret{flex:none;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;border:0;background:0 0;padding:0;color:var(--dsw-alias-label-tertiary);cursor:pointer;border-radius:3px}
 .harm-caret:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.14));color:var(--dsw-alias-label-primary)}
@@ -319,6 +333,7 @@ window.__ModuleLoader__.load({
         method("deviceInfo", ["request"]),
         method("deviceConnectIp", ["request"]),
         method("deviceDisconnectIp", ["request"]),
+        method("deviceProcessPids", ["request"]),
         method("hilogList", ["request"]),
         method("hilogStreamStart", ["request"]),
         method("hilogStreamRead", ["request"]),
@@ -789,6 +804,18 @@ window.__ModuleLoader__.load({
       const [hilogLevels, setHilogLevels] = React.useState(new Set(["I", "W", "E"]));
       const [hilogBundle, setHilogBundle] = React.useState("");
       const [hilogKeyword, setHilogKeyword] = React.useState("");
+      // 包名实时过滤：HiLog 行只有 pid 没有包名，经 deviceProcessPids（hdc ps -ef）
+      // 把包名解析成 pid 集合后在本地过滤。bundlePids=null 表示未启用；
+      // bundleLookup 跟踪解析状态（loading/ok/none/error）供 UI 提示。
+      const [bundlePids, setBundlePids] = React.useState(null);
+      const [bundleLookup, setBundleLookup] = React.useState("idle");
+      // 日志内查找（Ctrl/Cmd+F 由本 Tab 接管）：查找栏显隐 + 关键词 + 光标。
+      const [findOpen, setFindOpen] = React.useState(false);
+      const [findQuery, setFindQuery] = React.useState("");
+      const [findCursor, setFindCursor] = React.useState(0);
+      const hilogRootRef = React.useRef(null);
+      const findInputRef = React.useRef(null);
+      const logScrollRef = React.useRef(null);
 
       React.useEffect(() => {
         if (!hilogRunning || !hilogStreamId || !remote) return;
@@ -814,6 +841,68 @@ window.__ModuleLoader__.load({
         return () => { cancelled = true; clearInterval(id); };
       }, [hilogRunning, hilogStreamId, hilogLevels, remote]);
 
+      // 包名 → pid 集合的实时解析（防抖 500ms）。解析失败不拦截日志——退化为
+      // 未过滤并提示。换设备 / 流启停（应用可能重启换了 pid）都会重新解析。
+      React.useEffect(() => {
+        const b = hilogBundle.trim();
+        if (!b || !remote) { setBundlePids(null); setBundleLookup("idle"); return; }
+        let cancelled = false;
+        setBundlePids(null);
+        setBundleLookup("loading");
+        const t = setTimeout(async () => {
+          try {
+            const out = unwrap(await remote.deviceProcessPids({ device: device || undefined, bundle: b }));
+            if (cancelled) return;
+            if (out.ok && out.value && Array.isArray(out.value.pids)) {
+              const pids = out.value.pids.map(Number).filter((v) => Number.isFinite(v));
+              setBundlePids(pids);
+              setBundleLookup(pids.length ? "ok" : "none");
+            } else {
+              setBundleLookup("error");
+            }
+          } catch (_) {
+            if (!cancelled) setBundleLookup("error");
+          }
+        }, 500);
+        return () => { cancelled = true; clearTimeout(t); };
+      }, [hilogBundle, remote, device, hilogRunning, hilogStreamId]);
+
+      // Ctrl/Cmd+F 接管：本 Tab 可见（offsetParent 非 null，被隐藏的 Tab 为
+      // null）时阻止浏览器/壳层默认行为，打开日志内查找栏并聚焦。其他 Tab
+      // 激活时不接管，原生行为不受影响。capture 阶段监听以抢先壳层快捷键。
+      React.useEffect(() => {
+        const onKey = (e) => {
+          if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+          if (String(e.key).toLowerCase() !== "f") return;
+          const root = hilogRootRef.current;
+          if (!root || root.offsetParent === null) return;
+          e.preventDefault();
+          e.stopPropagation();
+          setFindOpen(true);
+          // 等查找栏渲染出来再聚焦并全选（便于直接覆盖输入）。
+          setTimeout(() => {
+            const el = findInputRef.current;
+            if (el) { el.focus(); el.select(); }
+          }, 0);
+        };
+        window.addEventListener("keydown", onKey, true);
+        return () => window.removeEventListener("keydown", onKey, true);
+      }, []);
+
+      // 查找跳转定位：只在 查找开关/关键词/光标 变化（全是用户动作）时滚动
+      // 当前命中行进视野。刻意不 keyed on hilogLines/viewLines——日志每秒追加
+      // 都会重渲，挂那些 deps 会不停把视图拽回命中行（同树搜索 reveal 教训）。
+      // findHits 在渲染体后段计算；effect 回调执行时该绑定已初始化。
+      React.useEffect(() => {
+        if (!findOpen || !findQuery.trim() || !findHits || !findHits.length) return;
+        const i = findHits[Math.min(findCursor, findHits.length - 1)];
+        if (i === undefined || !logScrollRef.current) return;
+        const row = logScrollRef.current.querySelector('[data-log-i="' + i + '"]');
+        if (row && typeof row.scrollIntoView === "function") {
+          row.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+      }, [findOpen, findQuery, findCursor]);
+
       const toggleLevel = (lv) => {
         setHilogLevels((prev) => {
           const next = new Set(prev);
@@ -831,11 +920,12 @@ window.__ModuleLoader__.load({
             setHilogStreamId("");
           }
           setHilogLines([]);
+          // 只把 device（和单选级别）传给流：关键词/包名都是**客户端实时视图
+          // 过滤**，不再作为 spawn 参数快照——流跑起来后随时改、随时生效、
+          // 清空可回溯（服务端一旦预滤，未命中的行永远到不了缓冲）。
           const r = await remote.hilogStreamStart({
             device: device || undefined,
             level: Array.from(hilogLevels).join("") || undefined,
-            bundle: hilogBundle.trim() || undefined,
-            keyword: hilogKeyword.trim() || undefined,
           });
           const out = unwrap(r);
           if (!out.ok) { setErrorMsg((out.error && (out.error.message || out.error.code)) || "启动失败"); return; }
@@ -872,30 +962,84 @@ window.__ModuleLoader__.load({
           lv,
         ),
       );
+      // ---- 实时视图过滤（关键词 + 包名 pid），随输入即时生效、清空即回溯 ----
+      // 级别 chips 仍在读取环里过滤（进缓冲的门槛，与旧行为一致）；这里只做
+      // 关键词（message/raw/tag/domain/pid 全字段不区分大小写子串）与包名
+      // （行 pid ∈ deviceProcessPids 解析出的集合）。
+      const kw = hilogKeyword.trim().toLowerCase();
+      const viewLines = hilogLines.filter((l) => {
+        if (bundlePids && !bundlePids.includes(l.pid)) return false;
+        if (kw) {
+          const hay = ((l.message || "") + "\n" + (l.raw || "") + "\n" + (l.tag || "")
+            + "\n" + (l.domain || "") + (l.pid != null ? "\npid " + l.pid : "")).toLowerCase();
+          if (!hay.includes(kw)) return false;
+        }
+        return true;
+      });
+      const filterActive = !!kw || !!bundlePids;
+      const bundleHint = bundleLookup === "none"
+        ? `未找到包「${hilogBundle.trim()}」的运行进程（未启动或包名有误），当前无匹配行`
+        : (bundleLookup === "error"
+            ? `包「${hilogBundle.trim()}」的 pid 解析失败，包名过滤暂未生效（hdc 不可用或设备未连接）`
+            : (bundleLookup === "loading" ? "正在解析包名对应进程…" : ""));
+
+      // ---- 日志内查找（Ctrl+F）：在**当前视图**（关键词/包名过滤后的行）里
+      // 逐个跳转——所见即所查，与 Chrome find 语义一致。命中字段与关键词过滤
+      // 同集：message/raw/tag/domain/pid，不区分大小写子串。 ----
+      const fq = findOpen ? findQuery.trim().toLowerCase() : "";
+      const findHits = [];
+      if (fq) {
+        viewLines.forEach((l, i) => {
+          const hay = ((l.message || "") + "\n" + (l.raw || "") + "\n" + (l.tag || "")
+            + "\n" + (l.domain || "") + (l.pid != null ? "\npid " + l.pid : "")).toLowerCase();
+          if (hay.includes(fq)) findHits.push(i);
+        });
+      }
+      const findCur = findHits.length ? Math.min(findCursor, findHits.length - 1) : 0;
+      const findCurLine = findHits.length ? findHits[findCur] : -1;
+      const moveFind = (delta) => {
+        if (!findHits.length) return;
+        setFindCursor((findCur + delta + findHits.length) % findHits.length);
+      };
+      const closeFind = () => { setFindOpen(false); setFindQuery(""); setFindCursor(0); };
+
       const linesView = hilogLines.length === 0
         ? React.createElement("div", { className: "harm-empty" }, hilogRunning ? "等待日志…" : "尚未启动 HiLog 流。设置过滤后点击「开始」。")
-        : React.createElement("div", { className: "harm-scroll" },
-            hilogLines.map((l, i) => {
+        : React.createElement(
+            "div", { className: "harm-scroll", ref: logScrollRef },
+            (filterActive || bundleHint)
+              ? React.createElement(
+                  "div", { className: "harm-logStat" },
+                  filterActive ? React.createElement("span", null, "显示 ", React.createElement("b", null, String(viewLines.length)), " / ", String(hilogLines.length), " 行") : null,
+                  bundleHint ? React.createElement("div", null, bundleHint) : null,
+                )
+              : null,
+            viewLines.length === 0 && filterActive
+              ? React.createElement("div", { className: "harm-empty" },
+                  bundleHint ? "等待包名解析或调整过滤条件。" : "缓冲区中没有匹配当前过滤条件的日志行（只搜已收到的行；新日志到达后实时过滤。）")
+              : null,
+            viewLines.map((l, i) => {
               // hilog 原生格式为 domain/tag（如 0FFFF/AudioManager）——Host 的
               // parseHilogLine 一直返回 domain 字段，渲染层此前漏显示。
               const tagText = (l.domain ? l.domain + "/" : "") + (l.tag || "");
+              const isFindCur = !!fq && i === findCurLine;
               return React.createElement(
                 "div",
-                { key: i, className: "harm-log-line" },
+                { key: i, className: "harm-log-line" + (isFindCur ? " harm-findCur" : ""), "data-log-i": i },
                 l.level
                   ? React.createElement("span", { className: "harm-log-level harm-level-" + l.level }, l.level)
                   : React.createElement("span", { className: "harm-log-level" }, "?"),
                 l.pid !== undefined ? React.createElement("span", { className: "harm-log-pid" }, "pid " + l.pid) : null,
-                tagText ? React.createElement("span", { className: "harm-log-tag" }, tagText) : null,
+                tagText ? React.createElement("span", { className: "harm-log-tag" }, markAll(tagText, fq)) : null,
                 l.message
-                  ? React.createElement("span", { className: "harm-log-msg" }, l.message)
-                  : React.createElement("span", { className: "harm-log-raw" }, l.raw || ""),
+                  ? React.createElement("span", { className: "harm-log-msg" }, markAll(l.message, fq))
+                  : React.createElement("span", { className: "harm-log-raw" }, markAll(l.raw || "", fq)),
               );
             }),
           );
 
       return React.createElement(
-        "div", { className: "harm-page harm-pane" },
+        "div", { className: "harm-page harm-pane", ref: hilogRootRef },
         React.createElement(
           "div", { className: "harm-head" },
           React.createElement("h3", { className: "harm-head-title" }, "HiLog 检查器"),
@@ -917,13 +1061,54 @@ window.__ModuleLoader__.load({
           "div", { className: "harm-row" },
           React.createElement("div", { className: "harm-field" },
             React.createElement("span", { className: "harm-label" }, "包名"),
-            React.createElement("input", { className: "harm-input", value: hilogBundle, onChange: (e) => setHilogBundle(e.target.value), placeholder: "可选，如 com.example.app" }),
+            React.createElement("input", { className: "harm-input", value: hilogBundle, onChange: (e) => setHilogBundle(e.target.value), placeholder: "实时过滤，如 com.example.app" }),
           ),
           React.createElement("div", { className: "harm-field" },
             React.createElement("span", { className: "harm-label" }, "关键词"),
-            React.createElement("input", { className: "harm-input", value: hilogKeyword, onChange: (e) => setHilogKeyword(e.target.value), placeholder: "可选，如 focus" }),
+            React.createElement("input", { className: "harm-input", value: hilogKeyword, onChange: (e) => setHilogKeyword(e.target.value), placeholder: "实时过滤，如 focus" }),
           ),
         ),
+        // 日志内查找栏（Ctrl/Cmd+F 打开；只在 HiLog Tab 可见时接管快捷键）。
+        findOpen ? React.createElement(
+          "div", { className: "harm-findBar" },
+          React.createElement("input", {
+            ref: findInputRef,
+            className: "harm-propsSearchInput",
+            value: findQuery,
+            placeholder: "查找日志：Enter 下一个 · Shift+Enter 上一个 · Esc 关闭",
+            spellCheck: false, autoComplete: "off", "aria-label": "查找日志",
+            onChange: (e) => { setFindQuery(e.target.value); setFindCursor(0); },
+            onKeyDown: (e) => {
+              if (e.key === "Escape") { e.preventDefault(); closeFind(); return; }
+              if (e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp") {
+                if (!findHits.length) return;
+                e.preventDefault();
+                moveFind(e.key === "ArrowUp" || (e.shiftKey && e.key === "Enter") ? -1 : 1);
+              }
+            },
+          }),
+          fq
+            ? React.createElement("span", { className: "harm-propsSearchCount" },
+                (findHits.length ? findCur + 1 : 0) + "/" + findHits.length)
+            : null,
+          React.createElement("button", {
+            type: "button", className: "harm-btn",
+            style: { height: "22px", padding: "0 6px", fontSize: "11px" },
+            disabled: !findHits.length, title: "上一个（Shift+Enter / ↑）",
+            onClick: () => moveFind(-1),
+          }, "‹"),
+          React.createElement("button", {
+            type: "button", className: "harm-btn",
+            style: { height: "22px", padding: "0 6px", fontSize: "11px" },
+            disabled: !findHits.length, title: "下一个（Enter / ↓）",
+            onClick: () => moveFind(1),
+          }, "›"),
+          React.createElement("button", {
+            type: "button", className: "harm-btn",
+            style: { height: "22px", padding: "0 8px", fontSize: "11px" },
+            title: "关闭（Esc）", onClick: closeFind,
+          }, "×"),
+        ) : null,
         errorMsg ? React.createElement("div", { className: "harm-error" }, errorMsg) : null,
         linesView,
       );
@@ -932,6 +1117,31 @@ window.__ModuleLoader__.load({
     /** boolean → 是/否（属性表用）。 */
     function yn(v) {
       return v ? "是" : "否";
+    }
+
+    /**
+     * 查找高亮：把 text 中**所有**命中 q 的片段包上 <mark>（每字段封顶 50 处
+     * 防超长行生成海量节点）。无命中时原样返回 string，命中时返回 React 子
+     * 元素数组——两者都可直接作 children。
+     */
+    function markAll(text, q) {
+      const s = String(text == null ? "" : text);
+      if (!q) return s;
+      const lower = s.toLowerCase();
+      const parts = [];
+      let i = 0;
+      let n = 0;
+      while (n < 50) {
+        const k = lower.indexOf(q, i);
+        if (k < 0) break;
+        if (k > i) parts.push(s.slice(i, k));
+        parts.push(React.createElement("mark", { key: "m" + n }, s.slice(k, k + q.length)));
+        i = k + q.length;
+        n++;
+      }
+      if (!parts.length) return s;
+      if (i < s.length) parts.push(s.slice(i));
+      return parts;
     }
 
     // UI 树缩进：每层 8px，**不封顶**（真机 dump 实测深度到 36 层，绝大多数
@@ -1066,6 +1276,9 @@ window.__ModuleLoader__.load({
       const [collapsed, setCollapsed] = React.useState(() => new Set()); // node indexes
       const [onlyComponents, setOnlyComponents] = React.useState(false); // 仅显示自定义组件
       const [propsQuery, setPropsQuery] = React.useState("");
+      // 组件树搜索（Chrome Elements 风格）：query + 当前命中光标。
+      const [treeQuery, setTreeQuery] = React.useState("");
+      const [matchCursor, setMatchCursor] = React.useState(0);
       const [swipe, setSwipe] = React.useState({ x1: "", y1: "", x2: "", y2: "", speed: "" });
       const [textInput, setTextInput] = React.useState("");
       const frameRef = React.useRef(null);
@@ -1170,6 +1383,64 @@ window.__ModuleLoader__.load({
         if (windowId === "") return [];
         return uiNodes.filter((n) => String(n.windowId) === String(windowId));
       }, [uiNodes, windowId, treeSource]);
+
+      // ---- 组件树搜索：匹配行 ∪ 祖先链（纯客户端过滤，两树源通用）----
+      // 命中字段 = 行的身份链 componentName → devId → className，外加 text；
+      // `#` 前缀只匹配 accessibilityId（与树行 `#数字` 展示写法一致）。候选集随
+      // 「仅组件」收窄，但祖先链不受其影响——上下文行必须保留，层级才不断裂。
+      const treeSearch = React.useMemo(() => {
+        const raw = treeQuery.trim();
+        const q = raw.toLowerCase();
+        if (!q) return null;
+        const byAcc = q.startsWith("#");
+        const acc = byAcc ? q.slice(1) : "";
+        const candidates = onlyComponents ? windowNodes.filter((n) => !!n.componentName) : windowNodes;
+        const matchList = [];
+        const matchSet = new Set();
+        for (const n of candidates) {
+          const hit = byAcc
+            ? (!!acc && String(n.accessibilityId || "").includes(acc))
+            : ((n.componentName && n.componentName.toLowerCase().includes(q))
+              || (n.devId && n.devId.toLowerCase().includes(q))
+              || (n.className && n.className.toLowerCase().includes(q))
+              || (n.text && n.text.toLowerCase().includes(q)));
+          if (hit) { matchList.push(n.index); matchSet.add(n.index); }
+        }
+        // 祖先链：每条命中行到根的路径。已在集合里的节点，其祖先此刻必已收
+        // 录过（加入时是一路向上走完的），可以安全 break。
+        const byIndex = new Map(windowNodes.map((n) => [n.index, n]));
+        const ancestorSet = new Set();
+        for (const idx of matchList) {
+          let cur = byIndex.get(idx);
+          while (cur && cur.parentIndex !== undefined && cur.parentIndex !== -1) {
+            const p = cur.parentIndex;
+            if (ancestorSet.has(p)) break;
+            ancestorSet.add(p);
+            cur = byIndex.get(p);
+          }
+        }
+        return { q, raw, matchList, matchSet, ancestorSet, count: matchList.length };
+      }, [windowNodes, treeQuery, onlyComponents]);
+
+      // 换树（重新 Dump / 切源 / 切窗口）后命中集合变了，光标回到第一个。
+      React.useEffect(() => { setMatchCursor(0); }, [windowNodes]);
+
+      // 搜索态下当前光标行即选中节点：属性面板、盒子模型、截图蓝框全部沿用
+      // 既有联动；滚动定位复用截图点选的一次性 reveal（只在输入/跳转这些用户
+      // 动作后触发，不会引发「树自动跳走」——该 effect 不 keyed on collapsed）。
+      React.useEffect(() => {
+        if (!treeSearch || !treeSearch.count) return;
+        const idx = treeSearch.matchList[Math.min(matchCursor, treeSearch.count - 1)];
+        if (idx === undefined) return;
+        setSelected(idx);
+        setReveal({ index: idx, at: Date.now() });
+      }, [treeSearch, matchCursor]);
+
+      const moveMatch = (delta) => {
+        if (!treeSearch || !treeSearch.count) return;
+        const cur = Math.min(matchCursor, treeSearch.count - 1);
+        setMatchCursor((cur + delta + treeSearch.count) % treeSearch.count);
+      };
 
       // 点击截图 → 映射到 device 像素 → 命中最深节点（与高亮框同一坐标系）
       const onShotClick = (e) => {
@@ -1357,7 +1628,40 @@ window.__ModuleLoader__.load({
       // 「仅组件」过滤：只留能提取出组件名的行（保留缩进层级以便看出嵌套关系）。
       const isCompRow = (n) => !!n.componentName;
       const shownTree = onlyComponents ? visibleTree.filter(isCompRow) : visibleTree;
-      const treeRows = shownTree.map((n) => {
+
+      // 搜索态行集：匹配行 ∪ 祖先链，保持原 DFS 顺序；忽略折叠状态（collapsed
+      // 不被修改，清空搜索后原折叠状态天然还原）。另把「当前选中节点」的路径
+      // 一并纳入——搜索中点截图命中的节点即使不匹配 query，也要能在树上看到。
+      let selPathSet = null;
+      if (treeSearch && selected != null) {
+        selPathSet = new Set([selected]);
+        let cur = windowNodes.find((n) => n.index === selected);
+        while (cur && cur.parentIndex !== undefined && cur.parentIndex !== -1) {
+          selPathSet.add(cur.parentIndex);
+          cur = windowNodes.find((n) => n.index === cur.parentIndex);
+        }
+      }
+      const searchRows = treeSearch
+        ? windowNodes.filter((n) =>
+            treeSearch.matchSet.has(n.index) || treeSearch.ancestorSet.has(n.index)
+            || (selPathSet && selPathSet.has(n.index)))
+        : null;
+
+      // 首处命中片段 <mark> 高亮（与属性面板同一模式/配色）；path 行不高亮。
+      const hl = (text, q) => {
+        const s = String(text);
+        if (!q) return s;
+        const i = s.toLowerCase().indexOf(q);
+        if (i < 0) return s;
+        return React.createElement(React.Fragment, null,
+          s.slice(0, i),
+          React.createElement("mark", { key: "m" }, s.slice(i, i + q.length)),
+          s.slice(i + q.length));
+      };
+
+      const treeRows = (searchRows || shownTree).map((n) => {
+        const isMatchRow = !!(treeSearch && treeSearch.matchSet.has(n.index));
+        const q = isMatchRow ? treeSearch.q : "";
         const depth = n.depth || 0;
         const kids = childCountOf.get(n.index) || 0;
         const isOpen = !collapsed.has(n.index);
@@ -1379,7 +1683,8 @@ window.__ModuleLoader__.load({
         const cls = "harm-node"
           + (selected === n.index ? " selected" : "")
           + (n.componentName ? " isComponent" : "")
-          + (n.visible === false ? " isHidden" : "");
+          + (n.visible === false ? " isHidden" : "")
+          + (treeSearch ? (isMatchRow ? " isMatch" : " isPath") : "");
         // 不可见存根（visible:false，如 Navigation 压栈后被标 Hidden 的 NavBar
         // 主页）在 Host 解析层保留节点本身、剪掉其全部子节点——这里变暗提示
         // 它当前不在画面上。
@@ -1390,6 +1695,15 @@ window.__ModuleLoader__.load({
         const label = n.componentName || n.devId || n.className || "Node";
         // 组件行补渲染类型（ImageKnifePro · Image）；其余直接是名字/类型。
         const subType = isComp && n.className ? n.className : "";
+        // 命中字段若在行上不可见（组件行命中 devId、非组件行命中 className），
+        // 补一段高亮小字，保证每个命中行都有可见反馈。
+        const lowerHas = (v) => !!v && String(v).toLowerCase().includes(q);
+        const hitVisible = lowerHas(label) || lowerHas(subType) || lowerHas(n.text)
+          || (!!n.accessibilityId && lowerHas("#" + n.accessibilityId));
+        const note = (isMatchRow && q && !hitVisible)
+          ? ((n.devId && n.devId !== label && lowerHas(n.devId)) ? n.devId
+            : ((n.className && n.className !== label && lowerHas(n.className)) ? n.className : ""))
+          : "";
         return React.createElement(
           "div",
           {
@@ -1406,7 +1720,8 @@ window.__ModuleLoader__.load({
                   : (n.className || "")),
           },
           guides,
-          kids > 0
+          // 搜索态忽略折叠（不提供折叠交互）；其余路径照旧。
+          (!treeSearch && kids > 0)
             ? React.createElement("span", {
                 key: "c",
                 className: "harm-caret" + (isOpen ? " harm-caretOpen" : ""),
@@ -1417,20 +1732,23 @@ window.__ModuleLoader__.load({
                 onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); toggle(n.index); } },
               }, caretSvg)
             : React.createElement("span", { key: "c", className: "harm-caret", style: { visibility: "hidden" } }),
-          React.createElement("span", { key: "t", className: "harm-nodeTag" }, label),
+          React.createElement("span", { key: "t", className: "harm-nodeTag" }, hl(label, q)),
           // 自定义组件徽标：组件名节点 + `__Common__` 包装节点。
           isComp
             ? React.createElement("span", { key: "badge", className: "harm-nodeBadge" }, "组件")
             : null,
           // 渲染类型放次要位置（DevEco 用图标，这里用淡色文字）。
           subType
-            ? React.createElement("span", { key: "rt", className: "harm-nodeType" }, subType)
+            ? React.createElement("span", { key: "rt", className: "harm-nodeType" }, hl(subType, q))
             : null,
-          n.text ? React.createElement("span", { key: "x", className: "harm-nodeText" }, n.text) : null,
+          note
+            ? React.createElement("span", { key: "hn", className: "harm-nodeType" }, hl(note, q))
+            : null,
+          n.text ? React.createElement("span", { key: "x", className: "harm-nodeText" }, hl(n.text, q)) : null,
           // 与属性面板同一取值：`#accessibilityId`（每个节点都有、全局唯一）。
           // **不显示 id**（devId）—— DevEco 也只显示组件名。
           n.accessibilityId
-            ? React.createElement("span", { key: "i", className: "harm-nodeId" }, "#" + n.accessibilityId)
+            ? React.createElement("span", { key: "i", className: "harm-nodeId" }, hl("#" + n.accessibilityId, q))
             : null,
           React.createElement("span", { key: "f", className: "harm-nodeFlags" },
             n.clickable ? React.createElement("span", { className: "harm-nodeFlag harm-nodeFlag-hit" }, "tap") : null,
@@ -1440,11 +1758,23 @@ window.__ModuleLoader__.load({
         );
       });
       const compCount = windowNodes.filter(isCompRow).length;
+      // 光标可能在换树后越界（count 变小），统一在这里夹取。
+      const matchCur = treeSearch && treeSearch.count ? Math.min(matchCursor, treeSearch.count - 1) : 0;
+      const navBtn = (delta, glyph, title) => React.createElement("button", {
+        type: "button", className: "harm-btn",
+        style: { height: "22px", padding: "0 6px", fontSize: "11px" },
+        disabled: !treeSearch || !treeSearch.count,
+        title,
+        onClick: () => moveMatch(delta),
+      }, glyph);
+      const clearTreeQuery = () => { setTreeQuery(""); setMatchCursor(0); };
       const treePane = React.createElement(
         "div", { className: "harm-inspColTop" },
         React.createElement("div", { className: "harm-inspTitle" }, "UI 树",
           React.createElement("span", { className: "harm-inspCount" },
-            shownTree.length + " / " + windowNodes.length + " 个节点" + (compCount ? " · " + compCount + " 个组件" : "")),
+            treeSearch
+              ? treeSearch.count + " 命中 / " + windowNodes.length + " 个节点"
+              : shownTree.length + " / " + windowNodes.length + " 个节点" + (compCount ? " · " + compCount + " 个组件" : "")),
           React.createElement("button", {
             type: "button",
             className: "harm-btn" + (onlyComponents ? " harm-btnOn" : ""),
@@ -1455,9 +1785,45 @@ window.__ModuleLoader__.load({
           }, onlyComponents ? "✓ 仅组件" : "仅组件"),
           React.createElement("button", { type: "button", className: "harm-btn", style: { height: "22px", padding: "0 8px", fontSize: "11px" }, disabled: !windowNodes.length, onClick: collapsed.size ? expandAll : collapseAll },
             collapsed.size ? "展开全部" : "折叠全部")),
-        windowNodes.length
-          ? React.createElement("div", { className: "harm-tree2", ref: treeRef }, treeRows)
-          : React.createElement("div", { className: "harm-propsEmpty" }, busy ? "正在抓取…" : "点「Dump UI」获取节点树"),
+        // 搜索行：Enter/↓ 下一个、Shift+Enter/↑ 上一个、Esc 清空。
+        React.createElement(
+          "div", { className: "harm-treeSearch" },
+          React.createElement("input", {
+            className: "harm-propsSearchInput",
+            value: treeQuery,
+            placeholder: "搜索组件名 / id / 类型 / 文本；#数字＝accessibilityId",
+            spellCheck: false, autoComplete: "off",
+            "aria-label": "搜索 UI 树",
+            onChange: (e) => { setTreeQuery(e.target.value); setMatchCursor(0); },
+            onKeyDown: (e) => {
+              if (e.key === "Escape") { e.preventDefault(); clearTreeQuery(); return; }
+              if (e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp") {
+                if (!treeSearch || !treeSearch.count) return;
+                e.preventDefault();
+                moveMatch(e.key === "ArrowUp" || (e.shiftKey && e.key === "Enter") ? -1 : 1);
+              }
+            },
+          }),
+          treeSearch
+            ? (treeSearch.count
+                ? React.createElement("span", { className: "harm-propsSearchCount" }, (matchCur + 1) + "/" + treeSearch.count)
+                : React.createElement("span", { className: "harm-propsSearchCount" }, "0 命中"))
+            : null,
+          navBtn(-1, "‹", "上一个（Shift+Enter / ↑）"),
+          navBtn(1, "›", "下一个（Enter / ↓）"),
+          treeQuery
+            ? React.createElement("button", {
+                type: "button", className: "harm-btn",
+                style: { height: "22px", padding: "0 8px", fontSize: "11px" },
+                onClick: clearTreeQuery,
+              }, "清除")
+            : null,
+        ),
+        !windowNodes.length
+          ? React.createElement("div", { className: "harm-propsEmpty" }, busy ? "正在抓取…" : "点「Dump UI」获取节点树")
+          : (treeSearch && !treeSearch.count)
+            ? React.createElement("div", { className: "harm-propsEmpty" }, "没有匹配「" + treeSearch.raw + "」的节点")
+            : React.createElement("div", { className: "harm-tree2", ref: treeRef }, treeRows),
       );
 
       // ---- 右下：属性（全部字段 + 搜索）+ 盒子模型 ----

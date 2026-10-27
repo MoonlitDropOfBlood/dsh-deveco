@@ -1703,3 +1703,40 @@ export function parseTconnResult (text) {
   // Unknown output — treat as failure so the caller surfaces the raw text.
   return { ok: false, message: raw || 'hdc 无输出（连接超时：设备不可达或端口不正确）' }
 }
+
+/**
+ * Parse `ps -ef` output (toybox format: `UID PID PPID C STIME TTY TIME CMD`)
+ * and collect the PIDs of the processes belonging to `bundle`.
+ *
+ * Match rule: the CMD **token** is the bundle exactly, or `<bundle>:<suffix>`
+ * (ArkTS apps run extra processes like `com.example.app:render`). Exact token
+ * match only — a substring like `com.example.app2` must NOT match
+ * `com.example.app`. HiLog lines carry no bundle name (only pid), so the
+ * client-side bundle filter needs this mapping.
+ *
+ * @param {string} psText raw `ps -ef` stdout (stderr tolerated, ignored).
+ * @param {string} bundle exact bundle name, e.g. `com.example.app`.
+ * @returns {number[]} unique ascending PIDs; `[]` when not running / no match.
+ */
+export function parseProcessPids (psText, bundle) {
+  const target = String(bundle || '').trim()
+  if (!target) return []
+  const out = []
+  for (const rawLine of String(psText || '').split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line) continue
+    const tokens = line.split(/\s+/)
+    if (tokens.length < 2) continue
+    const pid = Number(tokens[1])
+    if (!Number.isInteger(pid) || pid <= 0) continue // header / garbage rows
+    // CMD = 从固定列后开始；取不到完整 CMD 时用最后一个 token 兜底。
+    const cmdTokens = tokens.length > 7 ? tokens.slice(7) : [tokens[tokens.length - 1]]
+    for (const t of cmdTokens) {
+      if (t === target || t.startsWith(target + ':')) {
+        out.push(pid)
+        break
+      }
+    }
+  }
+  return Array.from(new Set(out)).sort((a, b) => a - b)
+}

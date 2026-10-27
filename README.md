@@ -23,7 +23,7 @@
 ## 功能
 
 ### 官方右侧边栏 Tab
-- **HiLog 检查器**：实时日志流（基于 `devecocli log --follow`）+ 级别过滤（chip 多选）+ 包名/关键词过滤 + 「开始/停止」控制
+- **HiLog 检查器**：实时日志流（基于 `devecocli log --follow`）+ 级别过滤（chip 多选）+ **包名/关键词实时过滤**——流跑着随时改随时生效、清空即回溯（不丢已缓冲的行）；包名自动解析为进程 pid 集合过滤（主进程 + `:render` 等后缀进程全收）+ **Ctrl+F 日志内查找**（Tab 内接管快捷键：全部命中高亮 + 计数 + Enter 逐个跳转 + Esc 关闭）+ 「开始/停止」控制
 - **ArkUI Inspector**：Chrome Elements 风格三栏——**左侧设备截图**（点「Dump UI」自动抓取，Host 内联返回 PNG dataUrl；**点击截图直接选中对应节点**并显示蓝色高亮框，**按 `origBounds` 真实布局矩形标注**——`bounds` 只是被滚动/遮挡后的可见区域，List 尤其不准；高亮与点击命中共用同一坐标系；点中后 **UI 树自动展开并滚动定位到该行**并高亮选中）+ **右上 UI 树**（**可逐节点折叠/展开 + 「折叠全部」**、层级引导线（**线性缩进不封顶**，深层可横向滚动）、**自定义组件显示组件名**，其内部 `__Common__` 占位节点归属到所属组件、tap/scroll/子节点数标记、`#accessibilityId` 标识、**顶部「树源」下拉两选一**：**DevEco 调试源**（反编译复刻 DevEco Studio 同款 `ark:<pid>@<pkg>` WebSocket 调试链路，**唯一带 padding/margin/border 声明值与 viewTag 组件名**；需 debug 应用且应用侧调试 socket 空闲——DevEco Studio 的 Inspector 面板开着时会占用唯一连接）/ 无障碍树（uitest，适合已发布应用）、**窗口下拉切换窗口**）+ **右下节点属性**（**全部设备原始属性**，支持**按属性名或值搜索过滤**并高亮命中项 + **盒子模型**：组件区域 / **内容区域（子节点并集实测）** / 四边内缩实测值；padding/margin/border 声明值在 uitest 源下显示「未提供」——已穷尽核对 7 条取数路径确实不输出，不做假数据；**DevEco 调试源下显示真实声明值**）；底部 Tap/Swipe/Text 操作
 - **Projects**：项目浏览器（v1.0 占位；v1.1 路线）
 

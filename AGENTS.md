@@ -7,8 +7,8 @@
 一个 **DeepSeek Harness（DSH）双面（Host + Client）bundle 插件**：在 DSH Web UI 提供完整的 HarmonyOS 开发能力。
 
 - **官方右侧边栏（`ctx.sidebarRightTabs`）注册两个页面 Tab**：
-  - **HiLog 检查器**（id `dsh-deveco:hilog`，guide order 50）：实时日志流（级别/包名/关键词过滤），基于 `devecocli log --follow` 封装
-  - **ArkUI Inspector**（id `dsh-deveco:arkui`，guide order 51）：**Chrome Elements 风格**——左侧设备截图（`uiScreenshot` 内联 dataUrl，点击截图命中节点并以**像素级 overlay** 按 `origBounds` 真实矩形高亮），右上 **可折叠** UI 树（层级引导线 + 自定义组件单独标注 + tap/scroll 标记 + 折叠全部/展开全部），右下节点属性（**全部设备原始属性** + **属性名/值搜索**）与盒子模型；顶部**窗口下拉**切换窗口；底部 Tap/Swipe/Text 操作
+  - **HiLog 检查器**（id `dsh-deveco:hilog`，guide order 50）：实时日志流（**级别/包名/关键词过滤**——级别 chips 是进缓冲的门槛（读取环）；**关键词与包名是客户端实时视图过滤**：流跑着随时改随时生效、清空即回溯，包名经 `deviceProcessPids` 把 bundle 映射成 pid 集合后按行 pid 过滤；**日志内查找**：HiLog Tab 可见时接管 Ctrl/Cmd+F 弹出查找栏——当前视图内全部命中 `<mark>` 高亮 + 计数，Enter/↓/› 下一个、Shift+Enter/↑/‹ 上一个（循环）、Esc/× 关闭，当前命中行整行描边并平滑滚动定位，定位 effect 只 keyed on 查找状态不挂 lines（日志每秒追加不得拽回视图）），基于 `devecocli log --follow` 封装
+  - **ArkUI Inspector**（id `dsh-deveco:arkui`，guide order 51）：**Chrome Elements 风格**——左侧设备截图（`uiScreenshot` 内联 dataUrl，点击截图命中节点并以**像素级 overlay** 按 `origBounds` 真实矩形高亮），右上 **可折叠** UI 树（层级引导线 + 自定义组件单独标注 + tap/scroll 标记 + 折叠全部/展开全部 + **树搜索**），右下节点属性（**全部设备原始属性** + **属性名/值搜索**）与盒子模型；顶部**窗口下拉**切换窗口；底部 Tap/Swipe/Text 操作
   - **Projects** 项目浏览器为 v1.0 占位（listProjects 返回空数组；v1.1 路线）
 - **官方右侧边栏注册 `.ets` 文件查看器**（id `dsh-deveco:arkts`，`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤，priority `extension` 优先于内置 text editor）。提供 ArkTS 语法高亮（关键字 + 装饰器 + 注释 + 字符串 + 数字）；内容经官方 `remote.workspaceFiles.read` 分页读取（绝对路径回退插件自有 `readTextFile` Remote）。
 - **设置面板新增「HarmonyOS Suite」页**（`settings.section`，order 40），分「工具链」「设备管理」两区。工具链区管理 DevEco Studio 与 HarmonyOS Command Line Tools 路径（三平台自发现、Studio/CLT 互斥、CLT 最低版本 26.0.0 校验）；设备管理区含**设备列表**（USB/网络目标，网络 `ip:port` 目标可一键断开）与 **IP 网络连接**表单（`hdc tconn <ip>:<port>`）。
@@ -18,14 +18,14 @@
 ```
 dsh-deveco/
 ├── package.json              # ESM 双面包：dsh.bundle.patch + dsh.client.web + exports(., /client, /typert, /package.json)
-├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，21 个 Remote 方法）
+├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，22 个 Remote 方法）
 ├── client.js                 # Client 半：__ModuleLoader__ bundle（Tab + Viewer + Settings + Remote mount）
 ├── typert.host.js            # Typert Host manifest：harmonyDevEco Remote 服务全部 invocation 的 zod schema
 ├── harmony-studio.mjs        # 零依赖：工具链路径探测（devecocli > CLT ≥26.0.0 > Studio）+ 版本解析 + 三平台默认路径
 ├── harmony-config.mjs        # 零依赖：配置持久化 + Studio/CLT 互斥 + 自发现调度
 ├── harmony-device.mjs        # 零依赖：devecocli 进程封装 + hdc IP 连接（tconn）+ HiLog/ui-layout JSON 解析
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 86 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影与子树截断/mac .app 路径补全/自定义组件/字体属性/devId 解析）
+├── scripts/self-test.mjs     # 92 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影与子树截断/mac .app 路径补全/自定义组件/字体属性/devId 解析/ps -ef 包名→pid 解析）
 ├── .github/workflows/release.yml  # v* tag → 构建 + 发布 GitHub Release
 ├── AGENTS.md                 # 本文件
 ├── README.md                 # 用户面向
@@ -90,7 +90,7 @@ function unwrap(res) {
 
 Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, message } }`。
 
-### 5. 21 个 Remote 方法
+### 5. 22 个 Remote 方法
 
 | 方法 | 用途 |
 |---|---|
@@ -102,6 +102,7 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 | `deviceInfo` | 设备详情 |
 | `deviceConnectIp` | IP 网络连接：`hdc tconn <ip>:<port>`（端口必填——hdc 无默认端口，须与设备开启调试后暴露的端口一致；HarmonyOS 直接在设备「设置 → 开发者选项」开启调试，无需 Android 那套 `hdc tmode`；devecocli 无对应能力，Host 直连 SDK 自带 hdc） |
 | `deviceDisconnectIp` | 断开 IP 设备：`hdc tconn <ip>:<port> -remove` |
+| `deviceProcessPids` | 解析包名→pid 集合：`hdc shell ps -ef` + Host 精确/`:后缀` 匹配（HiLog 行只有 pid 没有包名，客户端实时包名过滤靠它映射） |
 | `hilogList` | 历史 hilog（一次性） |
 | `hilogStreamStart` | 启动实时流（返回 streamId） |
 | `hilogStreamRead` | 读取缓冲区（drain maxLines） |
@@ -157,7 +158,7 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 
 ```bash
 npm run check              # 全部 JS 语法检查
-npm test                   # 86 个单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影与子树截断/mac .app 路径补全/自定义组件/字体属性/devId 解析）
+npm test                   # 92 个单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影与子树截断/mac .app 路径补全/自定义组件/字体属性/devId 解析/ps -ef 包名→pid 解析）
 dsh plugin --profile web add .   # 本地安装/重装
 ```
 
@@ -169,8 +170,8 @@ dsh plugin --profile web add .   # 本地安装/重装
 3. 输入一个 CLT 路径（含版本号如 `26.0.0`）→ 点「应用」→ 状态变绿；输入 Studio 路径 → 状态变 Studio
 4. 设置面板的「HarmonyOS Suite」页 → 验证「DevEco Studio 路径」「HarmonyOS Command Line Tools 路径」互斥（应用 CLT 清空 Studio，反之亦然）
 5. 官方右侧边栏 Guide 菜单看到「HiLog 检查器」「ArkUI Inspector」两个入口 → 各打开 Tab
-6. HiLog Tab：选设备（先点「刷新设备」）→ 设过滤 → 「开始」→ 日志流出现；点击级别 chip 可过滤
-7. ArkUI Tab：「Dump UI」→ **自动截图 + 当前树源的 UI 树** → 顶部**「树源」下拉**两选一切换即重抓（DevEco 调试源＝应用侧 ark socket，带盒模型声明值与组件名，窗口下拉此时禁用——该源按应用抓取；无障碍树＝uitest，适合已发布应用）、**「窗口」下拉**（**自动选中前台窗口**、**无「全部窗口」选项**，切换即重抓）→ 树上**折叠/展开**、层级引导线（**线性缩进不封顶**）、**名字为主标签**（能提取组件名就只显示组件名，如 `ImageKnifePro`；提取不到的 compid 照 DevEco 原样显示，如 `mainNavigationId`/`tab_0`；再没有显示真实类型含 `__Common__`，不显示 id、不编造占位文案）、`#accessibilityId` 标识、**「仅组件」过滤** → 点节点或**点截图**（树自动展开并滚动定位）→ 蓝框高亮 → 属性面板**搜索框**过滤、列出**全部设备原始属性** → 盒子模型显示**组件区域 / 内容区域 / 四边内缩实测值**；padding/margin/border/圆角在 DevEco 调试源下显示**声明值**，uitest 源显示「未提供」
+6. HiLog Tab：选设备（先点「刷新设备」）→「开始」→ 日志流出现；**流跑着直接改过滤即时生效**：点击级别 chip、输入关键词（message/tag/domain/pid 不区分大小写子串）、输入包名（防抖 500ms 经 `deviceProcessPids` 解析 pid 集合后按行 pid 过滤；主进程 + `:render` 等后缀进程全收）→ 顶部出现「显示 M / N 行」计数；清空关键词/包名后已缓冲的行**立即全部回来**（视图过滤不丢历史）；包名未运行时提示「未找到运行进程」；**Ctrl+F**（HiLog Tab 可见时）→ 弹出查找栏 → 输入即高亮全部命中 + `n/N` 计数 → Enter/› 循环跳转（当前行描边+滚动跟随）→ Shift+Enter/‹ 反向 → Esc 关闭；切到其他 Tab 后 Ctrl+F 不被本插件接管
+7. ArkUI Tab：「Dump UI」→ **自动截图 + 当前树源的 UI 树** → 顶部**「树源」下拉**两选一切换即重抓（DevEco 调试源＝应用侧 ark socket，带盒模型声明值与组件名，窗口下拉此时禁用——该源按应用抓取；无障碍树＝uitest，适合已发布应用）、**「窗口」下拉**（**自动选中前台窗口**、**无「全部窗口」选项**，切换即重抓）→ 树上**折叠/展开**、层级引导线（**线性缩进不封顶**）、**名字为主标签**（能提取组件名就只显示组件名，如 `ImageKnifePro`；提取不到的 compid 照 DevEco 原样显示，如 `mainNavigationId`/`tab_0`；再没有显示真实类型含 `__Common__`，不显示 id、不编造占位文案）、`#accessibilityId` 标识、**「仅组件」过滤**、**树搜索框**（输入即筛：匹配 componentName/devId/className/text，`#数字`＝accessibilityId；只显示命中行+祖先链、命中片段 `<mark>` 高亮、命中字段不在行上可见时补显小字；Enter/↓/› 下一个、Shift+Enter/↑/‹ 上一个、Esc/「清除」退出并**还原原折叠状态**；当前命中行自动成为选中节点——属性面板/截图蓝框联动；与「仅组件」叠加时候选收窄、祖先链不变；搜索中点截图命中的非匹配行也经选中路径保留可见；重新 Dump/切源/切窗口后 query 保留、光标回首个命中） → 点节点或**点截图**（树自动展开并滚动定位）→ 蓝框高亮 → 属性面板**搜索框**过滤、列出**全部设备原始属性** → 盒子模型显示**组件区域 / 内容区域 / 四边内缩实测值**；padding/margin/border/圆角在 DevEco 调试源下显示**声明值**，uitest 源显示「未提供」
 8. 打开任意 `.ets` 文件 → ArkTS 高亮查看器打开（文件名作为 tab 标题）
 9. Projects 能力：v1.0 占位（listProjects 返回空数组）
 10. 设置页「设备管理」区：设备列表出现（或空态文案）→ IP 连接后列表出现「网络」徽章的 ip:port 目标 → 点行内「断开」→ 列表自动刷新
@@ -187,6 +188,7 @@ dsh plugin --profile web add .   # 本地安装/重装
 - **Remote 返回值必须「网关 JSON-safe」**：可选字段**有值才挂 key**（`if (x !== undefined) out.x = x`），union 里的空值用 `false`/`""` 不要用 `null`；不可有循环引用或函数。self-test 跑真实 git/工具仓的返回值跑 strict schema + 等价 assertJsonSafe 复刻——**新增/修改 Remote 方法的返回结构必须过它**。
 - **路径归一化**：Windows 路径用 `node:path.resolve` 归一化为反斜杠；用户粘贴带前导/尾随空格或引号时，`harmony-studio.normalizeStudioPath` 会清洗。
 - **HiLog 流管理**：`_streams` Map 持有 `child`（spawn 进程）+ `buffer`（已解析的 hilog 行）；buffer 上限 5000 行防内存膨胀；`ctx.effect(() => () => killAll())` 在 plugin dispose 时清理。
+- **HiLog 过滤语义（2026-10 真机实测，防再犯）**：devecocli 的 `--keyword`/`--bundle-name` 在 `--follow` 下**其实是生效的**（实测 keyword `com`/中文都正确过滤，底层翻译成 `hilog -e '<kw>'` / `-P <pid>`）——用户报「不生效」的真因是**过滤参数只在 spawn 时快照一次**，流跑起来后改输入框毫无反应。修复（用户决策）：**关键词/包名改为纯客户端实时视图过滤**（流照常全量接收，缓冲不丢历史，输入即筛、清空即回溯；包名经 `deviceProcessPids` 把 bundle 映射成 pid 集合按行 pid 过滤，精确匹配 + `:` 后缀进程，点分名如 `x.backup` 不算同包）；UI **不再**向 `hilogStreamStart` 传 keyword/bundle（服务端预滤会让未命中的行永远到不了缓冲，破坏可回溯性）；级别 chips 维持读取环过滤（进缓冲门槛，防 D 级刷屏挤掉 IWE）。
 - **ArkUI 窗口机制（实测）**：dump 里每个窗口以 `type:"WindowScene"`、`id:"session<NN>"` 开头，该 NN 就是 `devecocli ui window list` 报的 window id（`session11` ↔ id 11）；`parseUiLayoutJson` 据此给每个节点打 `windowId`，下后代继承。**客户端按 `windowId` 过滤，不要靠 `--window` 重抓**——实测 `--window 11`（桌面）返回空根（`[0,0,0,0]`），而 `--all-windows` 一次抓全再前端过滤才稳。
 - **ArkUI 标注必须用 `origBounds`，`bounds` 只是可见区域（实测，重要）**：设备 dump 里 `bounds` 是**被滚动父容器裁剪、被其他窗口遮挡后**的可见矩形，`origBounds` 才是真实布局矩形。实测同一屏 328 个节点有 92 个两者不同，List 尤其严重：`ListItem bounds=[117,286][1216,515]`（可见切片仅 229px）而 `origBounds=[0,-1530][1216,515]`（真实高 2045px）。规则：**标注 overlay / 盒子模型 / 属性里的位置尺寸用 `origBounds`；tap 坐标用 `bounds` 的中心**（origBounds 可能整体在视口外）。
 - **`origBounds` 只有设备端 dump 才有，devecocli 会过滤掉**：`devecocli ui layout` 只透传 `id/type/text/bounds/children/clickable/longClickable/scrollable/hitTestBehavior`，`origBounds` 与大部分属性（hostWindowId/zIndex/opacity/selected/checked/hierarchy…）全部丢失。所以 `uiDump` 改走 `hdc shell uitest dumpLayout -p <devicePath>` + `hdc file recv` + 读本地文件，用 `parseUiRawDump` 解析；**hdc 不可用时回退 devecocli**。成功判据是设备端那行 `DumpLayout saved`（hdc 失败也 exit 0）；带 `-t <serial>` 指定目标；结束后 `rm -f` 设备侧临时文件。

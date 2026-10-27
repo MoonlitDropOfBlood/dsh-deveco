@@ -15,7 +15,7 @@ import {
   buildDevEcoWsHandshake, isWsHandshakeAccepted, encodeWsClientTextFrame, encodeWsPongFrame, decodeWsServerFrames,
   devEcoNodeSummary, devEcoTreeLines, devEcoToolNodes,
   buildUiRawDumpArgs, buildUiRawRecvArgs, buildUiRawCleanArgs,
-  buildHdcConnectArgs, buildHdcDisconnectArgs, parseTconnResult, resolveHdc,
+  buildHdcConnectArgs, buildHdcDisconnectArgs, parseTconnResult, parseProcessPids, resolveHdc,
   hitTest, readPngSize,
   LEVEL_SEVERITY, formatHilogLevel, devecoExec
 } from '../harmony-device.mjs'
@@ -1153,6 +1153,38 @@ test('parseTconnResult detects success and failure', () => {
   assert.match(parseTconnResult('').message, /超时/)
   // unknown non-empty output is surfaced but treated as failure
   assert.deepEqual(parseTconnResult('something odd'), { ok: false, message: 'something odd' })
+})
+
+test('parseProcessPids collects exact + suffix processes from ps -ef', () => {
+  // 真机 toybox `ps -ef`：UID PID PPID C STIME TTY TIME CMD（8 列，CMD 从第 8 列起）
+  const ps = [
+    'UID             PID   PPID C STIME TTY          TIME CMD',
+    'root              1      0 0 19:35:28 ?     00:06:12 init --second-stage 2918346',
+    '20020021       7686    595 4 19:37:10 ?     01:08:40 com.ohos.sceneboard',
+    '20020021       8135    595 0 19:37:11 ?     00:00:03 com.ohos.sceneboard:gpu',
+    '20020021      37361    595 1 20:01:02 ?     00:00:12 com.ohos.sceneboard:render',
+    '20020015       8066    595 0 19:37:12 ?     00:03:05 com.huawei.hmos.inputmethod:inputMethod',
+    '20020190      19621    595 0 02:54:55 ?     00:02:15 com.tencent.wechat1',
+    '20020190      20777    595 0 11:06:47 ?     00:00:04 com.tencent.wechat1.backup',
+  ].join('\n')
+  // 主进程 + `:gpu`/`:render` 后缀进程全部收入，升序去重
+  assert.deepEqual(parseProcessPids(ps, 'com.ohos.sceneboard'), [7686, 8135, 37361])
+  // 只有 `:` 后缀算同包进程；`.backup` 这类点分名是别的包，不许命中
+  assert.deepEqual(parseProcessPids(ps, 'com.tencent.wechat1'), [19621])
+  assert.deepEqual(parseProcessPids(ps, 'com.huawei.hmos.inputmethod'), [8066])
+  // 精确 token 匹配：前缀子串 / 相似名 / 更长包名都不许命中
+  assert.deepEqual(parseProcessPids(ps, 'com.ohos'), [])
+  assert.deepEqual(parseProcessPids(ps, 'com.ohos.sceneboard2'), [])
+  assert.deepEqual(parseProcessPids(ps, 'com.tencent.wechat'), [])
+  // 未运行 / 空输入 / 垃圾输出
+  assert.deepEqual(parseProcessPids(ps, 'com.example.notrunning'), [])
+  assert.deepEqual(parseProcessPids('', 'com.ohos.sceneboard'), [])
+  assert.deepEqual(parseProcessPids(null, 'com.ohos.sceneboard'), [])
+  assert.deepEqual(parseProcessPids(ps, ''), [])
+  assert.deepEqual(parseProcessPids('garbage\nrows only', 'com.ohos.sceneboard'), [])
+  // init 这类命令里带数字参数的行不会误伤（PID 列必须是正整数）
+  assert.deepEqual(parseProcessPids(ps, 'init'), [1])
+  assert.deepEqual(parseProcessPids('short rows\n1 2 3 com.x', 'com.x'), [2])
 })
 
 // resolveHdc reads DEVECO_SDK_HOME / DEVECO_HOME from the environment; the
