@@ -28,7 +28,7 @@
 - **Projects**：项目浏览器（v1.0 占位；v1.1 路线）
 
 ### Agent 工具（对话内可调用）
-- **`harmony_ui_tree`**：把 DevEco 调试源取树注册为 DSH 的 agent 工具（`ctx.tools`），对话里的 agent 可直接调用，返回**缩进树文本**（或 `format=json` 完整节点）——节点含组件名、bounds、文本与 **padding/margin/border 声明值**。支持 `device` / `pid` / `package_name` 定位目标、`include_attrs` 附带全部原始属性、`max_nodes` 截断保护。前置条件同 DevEco 调试源（debug 应用、DevEco Inspector 面板未占用）。
+- **`harmony_ui_tree`**：把 DevEco 调试源取树注册为 DSH 的 agent 工具（`ctx.tools`），对话里的 agent 可直接调用，返回**缩进树文本**（或 `format=json` 完整节点）——节点含组件名、bounds、文本与 **padding/margin/border 声明值**；JSON 中每个节点带直接子节点数 `childCount`。Swiper 在 `displayCount` 未配置或 ≤1 时只完整展开 `currentIndex` 页，其他页保留一层（`TabContent` 两层），`displayCount>1` 时不裁剪。支持 `device` / `pid` / `package_name` 定位目标、`include_attrs` 附带全部原始属性、`max_nodes` 截断保护。前置条件同 DevEco 调试源（debug 应用、DevEco Inspector 面板未占用）。
 
 ### .ets 文件查看器
 - 注册为官方侧边栏 file tab（`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤），`extension` 优先级优先于内置 text editor
@@ -76,7 +76,7 @@ dsh plugin --profile web add .
 
 ```bash
 npm run check    # 全部 JS 语法检查
-npm test         # 82 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析）
+npm test         # 93 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析）
 ```
 
 **改插件后必须重启 DSH** 生效（Host 加载、typert 注册、client bundle 注入都在启动时发生）。

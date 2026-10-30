@@ -1133,7 +1133,7 @@ export function parseDevEcoTree (root, windowId = 0) {
   const nodes = []
   const toStr = (v) => (v === undefined || v === null) ? '' : String(v)
   const truthy = (v) => { const s = toStr(v).toLowerCase(); return s === 'true' || s === '1' || s === 'yes' }
-  const visit = (node, depth, parentIndex) => {
+  const visit = (node, depth, parentIndex, maxDepth = Infinity) => {
     if (!node || typeof node !== 'object') return
     const attrs = node.$attrs && typeof node.$attrs === 'object' ? node.$attrs : {}
     // 可见性「存根」语义（与 uitest 源一致，用户决策）：只看节点自身。自身
@@ -1158,8 +1158,9 @@ export function parseDevEcoTree (root, windowId = 0) {
     // 真实数据语义（实测）：Text 文本在 $attrs.content、Button 在 $attrs.label；
     // focused/enabled 是布尔。
     const devId = toStr(attrs.id ?? '')
+    const selfIndex = nodes.length
     nodes.push({
-      index: nodes.length,
+      index: selfIndex,
       depth,
       parentIndex,
       windowId,
@@ -1215,9 +1216,23 @@ export function parseDevEcoTree (root, windowId = 0) {
     })
     const kids = Array.isArray(node.$children) ? node.$children
       : (Array.isArray(node.children) ? node.children : [])
-    // 自身不可见：保留存根，不递归子节点。
-    if (!nodeVisible) return
-    for (const c of kids) visit(c, depth + 1, nodes.length - 1)
+    // 自身不可见：保留存根，不递归子节点。maxDepth 同时限制 Swiper 非当前页。
+    if (!nodeVisible || depth >= maxDepth) return
+    // Swiper 一般只展示 currentIndex 对应的直接子页面：当前页完整保留；其他页
+    // 若是 TabContent 保留两层（页根 + 其直接子节点），否则只保留页根一层。
+    // displayCount 未配置时默认 1；只有明确大于 1 才完全不做这套裁剪。
+    const pruneSwiperPages = rawType === 'Swiper' && !(Number(attrs.displayCount ?? 1) > 1)
+    const rawCurrentIndex = Number(attrs.currentIndex ?? attrs.index ?? 0)
+    const currentIndex = Number.isFinite(rawCurrentIndex) ? Math.trunc(rawCurrentIndex) : 0
+    for (let childIndex = 0; childIndex < kids.length; childIndex++) {
+      const child = kids[childIndex]
+      let childMaxDepth = maxDepth
+      if (pruneSwiperPages && childIndex !== currentIndex) {
+        const childType = child && typeof child === 'object' ? toStr(child.$type ?? child.type ?? '') : ''
+        childMaxDepth = Math.min(maxDepth, depth + (childType === 'TabContent' ? 2 : 1))
+      }
+      visit(child, depth + 1, selfIndex, childMaxDepth)
+    }
   }
   visit(tree, 0, -1)
   // ownerComponent：最近的命名自定义组件祖先（供属性面板显示「所属组件」）。

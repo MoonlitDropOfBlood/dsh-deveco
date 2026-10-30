@@ -815,10 +815,52 @@ test('parseDevEcoTree keeps invisible nodes as stubs, prunes their subtrees', ()
   assert.deepEqual(ids, ['', 'a', 't1', 't2', 't3', 's4', 't4', 't5', 'nv'])
   assert.equal(nodes[2].visible, false) // t1 存根带 visible:false
   assert.equal(nodes[4].visible, true)
-  // 剪枝后 index/depth 保持连续（parseDevEcoTree 的 parentIndex 是既有的
-  // 链式语义：指向递归时的上一入列节点——t2 前面是 t1 存根，故 p=2）
-  assert.equal(nodes[3].parentIndex, 2)
+  // 剪枝后 index/depth 保持连续，兄弟节点的 parentIndex 都指向真实父节点。
+  assert.equal(nodes[3].parentIndex, 1)
   assert.equal(nodes[3].depth, 2)
+})
+
+test('parseDevEcoTree prunes non-current Swiper pages when displayCount is absent', () => {
+  const leaf = (id) => ({ $type: 'Text', $ID: id, $rect: '[0,0][10,10]', $attrs: {}, $children: [] })
+  const container = (type, id, kids) => ({ $type: type, $ID: id, $rect: '[0,0][100,100]', $attrs: {}, $children: kids })
+  const makeTree = (attrs) => ({
+    $type: 'root',
+    $children: [{
+      $type: 'Swiper', $ID: 'swiper', $rect: '[0,0][100,100]', $attrs: attrs,
+      $children: [
+        container('Column', 'page0', [leaf('page0deep')]),
+        container('TabContent', 'page1', [container('Column', 'page1root', [leaf('page1deep')])]),
+        container('TabContent', 'page2', [
+          container('Column', 'page2a', [leaf('page2adeep')]),
+          container('Row', 'page2b', [leaf('page2bdeep')]),
+        ]),
+      ],
+    }],
+  })
+
+  // displayCount 未配置 → 按 1 处理。currentIndex=1 的 page1 整棵保留；
+  // page0 非 TabContent 只留页根；page2 是 TabContent，留页根与直接子节点两层。
+  const nodes = parseDevEcoTree(makeTree({ currentIndex: '1' }))
+  assert.deepEqual(nodes.map((n) => n.accessibilityId), [
+    '', 'swiper', 'page0', 'page1', 'page1root', 'page1deep', 'page2', 'page2a', 'page2b',
+  ])
+  const byId = new Map(nodes.map((n) => [n.accessibilityId, n]))
+  assert.equal(byId.get('page0').depth, 2)
+  assert.equal(byId.get('page2a').depth, 3)
+  assert.equal(byId.get('page2b').depth, 3)
+  assert.equal(byId.get('page2a').parentIndex, byId.get('page2').index)
+  assert.equal(byId.get('page2b').parentIndex, byId.get('page2').index)
+  // agent 工具仍按裁剪后的完整解析树给出每个节点的直接子节点数。
+  const toolNodes = devEcoToolNodes(nodes, 400).nodes
+  assert.equal(toolNodes.find((n) => n.accessibilityId === 'page2').childCount, 2)
+  assert.equal(toolNodes.find((n) => n.accessibilityId === 'page1root').childCount, 1)
+
+  // 显式 displayCount>1 → 不做 Swiper 限深，所有页面及后代都保留。
+  const multi = parseDevEcoTree(makeTree({ currentIndex: 1, displayCount: '2' }))
+  assert.deepEqual(multi.map((n) => n.accessibilityId), [
+    '', 'swiper', 'page0', 'page0deep', 'page1', 'page1root', 'page1deep',
+    'page2', 'page2a', 'page2adeep', 'page2b', 'page2bdeep',
+  ])
 })
 
 test('parseUiRawDump keeps visible="false" nodes as stubs and prunes their subtrees', () => {
