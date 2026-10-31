@@ -1159,11 +1159,15 @@ export function parseDevEcoTree (root, windowId = 0) {
     // focused/enabled 是布尔。
     const devId = toStr(attrs.id ?? '')
     const selfIndex = nodes.length
+    const kids = Array.isArray(node.$children) ? node.$children
+      : (Array.isArray(node.children) ? node.children : [])
     nodes.push({
       index: selfIndex,
       depth,
       parentIndex,
       windowId,
+      // 原始树的直接子节点数：不可见/Swiper/max_nodes 裁剪均不得把它改成 0。
+      childCount: kids.length,
       text: toStr(node.$text ?? node.text ?? attrs.text ?? attrs.content ?? attrs.label),
       originalText: toStr(attrs.accessibilityText ?? ''),
       devId,
@@ -1214,10 +1218,15 @@ export function parseDevEcoTree (root, windowId = 0) {
         isCustom ? { isCustom: 'true' } : {},
         typeTag ? { type: typeTag } : {}),
     })
-    const kids = Array.isArray(node.$children) ? node.$children
-      : (Array.isArray(node.children) ? node.children : [])
     // 自身不可见：保留存根，不递归子节点。maxDepth 同时限制 Swiper 非当前页。
-    if (!nodeVisible || depth >= maxDepth) return
+    // 子节点被省略时保留原始 childCount，并明确标记，避免被误认为天然叶子。
+    if (!nodeVisible || depth >= maxDepth) {
+      if (kids.length) {
+        nodes[selfIndex].childrenOmitted = true
+        nodes[selfIndex].hiddenDirect = kids.length
+      }
+      return
+    }
     // Swiper 一般只展示 currentIndex 对应的直接子页面：当前页完整保留；其他页
     // 若是 TabContent 保留两层（页根 + 其直接子节点），否则只保留页根一层。
     // displayCount 未配置时默认 1；只有明确大于 1 才完全不做这套裁剪。
@@ -1436,7 +1445,7 @@ export function devEcoTreeLines (nodes) {
  * agent 工具面的节点裁剪：**整棵子树保留/省略，绝不发半棵**。超出 cap 的节点
  * 连同其后代整体省略；被省略节点的最近保留祖先标 `childrenOmitted: true` 与
  * `hiddenDirect`（被省略的直接子节点数）；每个保留节点带 `childCount`
- * （完整树中的直接子节点总数）——前端/agent 由此知道内部还有多少孩子。
+ * （原始未裁剪树中的直接子节点总数）——前端/agent 由此知道内部还有多少孩子。
  *
  * @param {Array<object>} nodes parseDevEcoTree 的扁平节点（DFS 序，index/parentIndex/depth）
  * @param {number} cap 节点上限（4000 封顶）
@@ -1471,7 +1480,12 @@ export function devEcoToolNodes (nodes, cap = 400, includeAttrs = false) {
     }
     const s = devEcoNodeSummary(n, includeAttrs)
     if (!s) continue
-    s.childCount = childCount.get(n.index) || 0
+    // parseDevEcoTree 已保存原始直接子节点数；裁剪后的扁平列表只作旧输入回退。
+    s.childCount = Number.isFinite(n.childCount) ? n.childCount : (childCount.get(n.index) || 0)
+    if (n.childrenOmitted) {
+      s.childrenOmitted = true
+      s.hiddenDirect = Math.max(0, Number(n.hiddenDirect) || 0)
+    }
     items.push(s)
     keptStack.length = depth
     keptStack.push(s)

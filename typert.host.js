@@ -199,6 +199,11 @@ const uiNodeSchema = z
     // Nearest ancestor that is a custom component — labels the anonymous
     // `__Common__` placeholders the toolchain emits for component internals.
     ownerComponent: z.string().optional(),
+    // Original direct-child count and structural-pruning markers stay stable even
+    // when Swiper/visibility trimming removes every returned child.
+    childCount: z.number().optional(),
+    childrenOmitted: z.boolean().optional(),
+    hiddenDirect: z.number().optional(),
     // Developer-assigned `.id('…')` — empty when unset, never an accessibilityId.
     devId: z.string().optional(),
     key: z.string().optional(),

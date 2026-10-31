@@ -148,7 +148,7 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 
 **`harmony_ui_tree`** —— DevEco 调试源取树，注册进 DSH 的 `ctx.tools`（`@deepseek-ai/dsh-tools` 的 `defineTool`），agent 可直接调用：
 
-- **参数**：`device`（序列号，省略用默认目标）、`pid` / `package_name`（省略取前台窗口应用）、`format`（`tree` 缩进树文本＝默认 / `json` 完整节点 JSON）、`include_attrs`（附带全部原始属性，占篇幅，默认关）、`max_nodes`（默认 400、上限 4000）。截断**整棵子树省略，绝不发半棵**：被省略节点的最近保留祖先带 `childrenOmitted: true` + `hiddenDirect`（省略的直接子节点数），每个节点带 `childCount`（完整树口径的直接子节点总数）——前端/agent 由此知道内部还有多少孩子。
+- **参数**：`device`（序列号，省略用默认目标）、`pid` / `package_name`（省略取前台窗口应用）、`format`（`tree` 缩进树文本＝默认 / `json` 完整节点 JSON）、`include_attrs`（附带全部原始属性，占篇幅，默认关）、`max_nodes`（默认 400、上限 4000）。截断**整棵子树省略，绝不发半棵**：被省略节点的最近保留祖先带 `childrenOmitted: true` + `hiddenDirect`（省略的直接子节点数），每个节点带 `childCount`（原始未裁剪树口径的直接子节点总数，Swiper/不可见/max_nodes 裁剪后均保持原值）——前端/agent 由此知道内部还有多少孩子；结构性裁剪也通过 `childrenOmitted`/`hiddenDirect` 标记，不得把被裁成叶子的节点误报成 `childCount:0`。
 - **Swiper 裁剪（Inspector 与 agent 共用 `parseDevEcoTree`）**：`displayCount` 未配置按 1；未配置或 ≤1 时，仅 `currentIndex` 对应的直接子页面完整保留，非当前页若是 `TabContent` 最多保留两层（页根 + 直接子节点），其他类型只保留页根一层；`displayCount>1` 完全不做这套 Swiper 裁剪。不可见存根规则与 `max_nodes` 截断仍照常生效。
 - **canonical 输出**（`output.schema` 严格校验）：`{ source:"deveco", pid, packageName, nodeCount, truncated, nodes[] }`，节点是 `devEcoNodeSummary` 的紧凑投影（展示名沿用 UI 标签规则：组件名→开发者 id→真实类型；声明值**有值才挂 key**）；`render` 把 nodes 投影成缩进树文本行（`devEcoTreeLines`），`format=json` 时输出完整 JSON。
 - **注册模式**（Host `[Service.init]`）：动态 `import("@deepseek-ai/dsh-tools")` → `this._ctx.inject(["tools"], ...)` → `tools.register(buildHarmonyUiTreeTool(...))`，注册器返回的 disposer 用 `this._ctx.effect(() => off)` 挂到插件生命周期。**全链路 try/catch 优雅降级**：dsh-tools / ctx.tools 任一不可用就静默跳过，Remote/UI 面不受影响。`peerDependencies` 加 `@deepseek-ai/dsh-tools`（双段范围，过兼容性 gate）。

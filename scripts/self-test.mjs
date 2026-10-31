@@ -850,10 +850,23 @@ test('parseDevEcoTree prunes non-current Swiper pages when displayCount is absen
   assert.equal(byId.get('page2b').depth, 3)
   assert.equal(byId.get('page2a').parentIndex, byId.get('page2').index)
   assert.equal(byId.get('page2b').parentIndex, byId.get('page2').index)
-  // agent 工具仍按裁剪后的完整解析树给出每个节点的直接子节点数。
+  // childCount 始终保持原始树口径；即使子节点全部被裁掉，也不能变成 0。
+  assert.equal(byId.get('page0').childCount, 1)
+  assert.equal(byId.get('page0').childrenOmitted, true)
+  assert.equal(byId.get('page0').hiddenDirect, 1)
+  assert.equal(byId.get('page2a').childCount, 1)
+  assert.equal(byId.get('page2b').childCount, 1)
   const toolNodes = devEcoToolNodes(nodes, 400).nodes
-  assert.equal(toolNodes.find((n) => n.accessibilityId === 'page2').childCount, 2)
-  assert.equal(toolNodes.find((n) => n.accessibilityId === 'page1root').childCount, 1)
+  const toolById = new Map(toolNodes.map((n) => [n.accessibilityId, n]))
+  assert.equal(toolById.get('page0').childCount, 1)
+  assert.equal(toolById.get('page0').childrenOmitted, true)
+  assert.equal(toolById.get('page0').hiddenDirect, 1)
+  assert.equal(toolById.get('page2a').childCount, 1)
+  assert.equal(toolById.get('page2b').childCount, 1)
+  assert.equal(toolById.get('page2').childCount, 2)
+  assert.equal(toolById.get('page1root').childCount, 1)
+  const page0ToolIndex = toolNodes.findIndex((n) => n.accessibilityId === 'page0')
+  assert.ok(devEcoTreeLines(toolNodes)[page0ToolIndex].includes('+1 children hidden'))
 
   // 显式 displayCount>1 → 不做 Swiper 限深，所有页面及后代都保留。
   const multi = parseDevEcoTree(makeTree({ currentIndex: 1, displayCount: '2' }))
