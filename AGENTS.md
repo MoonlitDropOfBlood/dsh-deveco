@@ -11,6 +11,7 @@
   - **ArkUI Inspector**（id `dsh-deveco:arkui`，guide order 51）：**Chrome Elements 风格**——左侧设备截图（`uiScreenshot` 内联 dataUrl，点击截图命中节点并以**像素级 overlay** 按 `origBounds` 真实矩形高亮），右上 **可折叠** UI 树（层级引导线 + 自定义组件单独标注 + tap/scroll 标记 + 折叠全部/展开全部 + **树搜索**），右下节点属性（**全部设备原始属性** + **属性名/值搜索**）与盒子模型；顶部**窗口下拉**切换窗口；底部 Tap/Swipe/Text 操作
   - **Projects** 项目浏览器为 v1.0 占位（listProjects 返回空数组；v1.1 路线）
 - **官方右侧边栏注册 `.ets` 文件查看器**（id `dsh-deveco:arkts`，`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤，priority `extension` 优先于内置 text editor）。提供 ArkTS 语法高亮（关键字 + 装饰器 + 注释 + 字符串 + 数字）；内容经官方 `remote.workspaceFiles.read` 分页读取（绝对路径回退插件自有 `readTextFile` Remote）。
+- **给对话里的 agent 提供 ArkTS 运行时调试器**（`ctx.tools` 的 `harmony_debug`）：attach/断点/暂停/单步/调用栈/求值，通道＝`hdc fport ark:<pid>@Debugger` + 裸 socket 6 头 WS + CDP 风格 JSON-RPC，与 DevEco Studio 同款。**不重复造 devecocli 的轮子**：日志走 `devecocli log`，应用管理走 `devecocli device app`，UI 树走本插件的 `harmony_ui_tree`。
 - **设置面板新增「HarmonyOS Suite」页**（`settings.section`，order 40），分「工具链」「设备管理」两区。工具链区管理 DevEco Studio 与 HarmonyOS Command Line Tools 路径（三平台自发现、Studio/CLT 互斥、CLT 最低版本 26.0.0 校验）；设备管理区含**设备列表**（USB/网络目标，网络 `ip:port` 目标可一键断开）与 **IP 网络连接**表单（`hdc tconn <ip>:<port>`）。
 
 ## 目录结构
@@ -18,14 +19,20 @@
 ```
 dsh-deveco/
 ├── package.json              # ESM 双面包：dsh.bundle.patch + dsh.client.web + exports(., /client, /typert, /package.json)
-├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，22 个 Remote 方法）
+├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，22 个 Remote 方法 + 2 个 agent 工具注册）
 ├── client.js                 # Client 半：__ModuleLoader__ bundle（Tab + Viewer + Settings + Remote mount）
 ├── typert.host.js            # Typert Host manifest：harmonyDevEco Remote 服务全部 invocation 的 zod schema
 ├── harmony-studio.mjs        # 零依赖：工具链路径探测（devecocli > CLT ≥26.0.0 > Studio）+ 版本解析 + 三平台默认路径
 ├── harmony-config.mjs        # 零依赖：配置持久化 + Studio/CLT 互斥 + 自发现调度
-├── harmony-device.mjs        # 零依赖：devecocli 进程封装 + hdc IP 连接（tconn）+ HiLog/ui-layout JSON 解析
+├── harmony-device.mjs        # 零依赖：devecocli 进程封装 + hdc IP 连接（tconn）+ HiLog/ui-layout JSON 解析 + 裸 WS 帧编解码
+├── harmony-tools.mjs         # 零依赖：调试器所需的设备命令构造/解析（bm dump 签名探测、aa appdebug/start/force-stop、ps -ef）+ 注入安全（shellQuote + 白名单正则）
+├── harmony-debugger.mjs      # 零依赖：ArkTS 运行时调试器会话（裸 socket WS + CDP 风格 JSON-RPC；断点/暂停/单步/求值/属性）
+├── harmony-agent-tools.mjs   # 零依赖：agent 工具定义（harmony_debug），执行经 host 端口注入
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 93 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影与子树截断/mac .app 路径补全/自定义组件/字体属性/devId 解析/ps -ef 包名→pid 解析）
+├── scripts/self-test.mjs     # 101 个独立核心单元测试（原 93 + 命令构造/解析 + 调试协议纯函数）
+├── scripts/e2e-agent-tools.mjs  # 真机/模拟器跑 agent 调试工具的端到端探针（不依赖 DSH）
+├── docs/arkts-debug-recon.md        # ArkTS 调试协议实测调研（615 行，每条结论带证据与置信度）
+├── docs/recon-scripts/               # 调研用探针（arkts-debug-probe*.mjs、jar 常量池提取脚本）
 ├── .github/workflows/release.yml  # v* tag → 构建 + 发布 GitHub Release
 ├── AGENTS.md                 # 本文件
 ├── README.md                 # 用户面向
@@ -155,11 +162,38 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 - **实现复用**：工具走 `service._fetchDevEcoTree()`（rich：nodes + source + pid + packageName）；Remote `uiDevEcoTree` 是它的薄包装（严格按 TYPERT 契约只回 `{nodes, source}`）。同一份取树链路两面共用。
 - **边界同 DevEco 调试源**：需 debug 应用 + IDE Inspector 面板未占用（单客户端）；失败时抛错（registry 转 isError 文本），错误信息含全部前置条件指引。`isConcurrencySafe: true`（只读无共享状态，可并行）。
 
+### 10. Agent 调试工具面（v0.4.0 新增）
+
+Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的 `buildHarmonyAgentTools`）：**命令构造/解析/会话状态机全在 `harmony-*.mjs` 纯函数模块里**，`index.js` 只提供执行与设备传输（`host.hdc` / `host.shell` / `host.sessions`），因此可脱离 DSH 单测。
+
+| 工具 | 动作 | 底层 |
+|---|---|---|
+| `harmony_debug` | attach / status / scripts / set_breakpoint / remove_breakpoint / breakpoints / pause / resume / step / run / stack / evaluate / properties / exceptions / events / detach | **ArkTS 运行时调试器**（见 §11） |
+
+- **不重复造 devecocli 的轮子（用户决策）**：`devecocli log` 已覆盖日志（`--level/--keyword/--bundle-name/--tail/--format json/--follow`），`devecocli device app` 已覆盖 list/info/start/stop/install/uninstall（`device app info --format json` 里就有 `applicationInfo.appProvisionType`＝debug 签名判定），`devecocli ui layout` 覆盖布局树。**因此不提供 `harmony_hilog` / `harmony_app` 工具**——agent 直接跑 CLI 即可；插件只补 devecocli 没有的那块：**ArkTS 运行时调试器**。
+- **工具描述里要点明分工**（`harmony_debug.description` 末段）：日志走 `devecocli log`、应用管理走 `devecocli device app`、UI 树走 `harmony_ui_tree`——避免 agent 在三处重复试探。
+- **`harmony_debug` 需要的两个非 devecocli 事实**由工具内部自己解决：① **debug 签名判定**（`bm dump -n` → `applicationInfo.appProvisionType == "debug"`；stage 模型应用的 mainAbility 在 `hapModuleInfos[]` 里，**顶层没有 `mainElementName`**，2026-11 实测踩过）；② **wait-for-debugger 启动**（`aa appdebug` → `aa force-stop` → `aa start -D`）。
+
+
+### 11. ArkTS 运行时调试器（实测链路，docs/arkts-debug-recon.md 有完整证据）
+
+- **通道**：`hdc fport tcp:<本地端口> ark:<pid>@Debugger` → **裸 socket 6 头 WS 握手**（`GET /` + Connection/Host/Sec-WebSocket-Key/Sec-WebSocket-Version/Upgrade，与 ArkUI Inspector **同一套**握手，复用 `harmony-device.mjs` 的 `buildDevEcoWsHandshake`/`encodeWsClientTextFrame`/`encodeWsPongFrame`/`decodeWsServerFrames`）→ **CDP 风格 JSON-RPC**（`{id,method,params}`/`{id,result}`，事件无 id）。
+- **`ark:<pid>@<包名>` 是 Inspector 通道，`ark:<pid>@Debugger` 才是调试器**（混用会连上另一套协议）。hdc 内建帮助只写三段式 `ark:pid@tid@Debugger`，**两段式实测可用**。清理只用 `hdc fport rm tcp:<p> ark:<pid>@Debugger`（`--remove` 无效且会漏规则）。
+- **错误不是 JSON-RPC error，而是 `result.code` / `result.message`**（如 `{"result":{"code":1,"message":"Can only perform operation while paused"}}`）——判定成功必须看 `result.code === undefined`（`isDebuggerError`）。
+- **不支持**：`Runtime.evaluate`（`unknown method`）、`Debugger.getStackTrace`（`Unknown method`）、`Debugger.getScriptSource`（`not supported`）。所以**求值必须走 `Debugger.evaluateOnCallFrame`（仅暂停态）**，调用栈取 `Debugger.paused.callFrames`，源码读本地工程文件。
+- **断点**：`url` 必须**逐字等于** `scriptParsed.url`（形态 `entry|<pkg/lib>|<version>|<工程内相对路径>`，用 `|` 分段），否则 `Unknown file name.`；行/列 **0 基**；`breakpointId` 形如 `id:<line>:<col>:<url>`；`scriptId` **每次连接重编号**，断点表按 url 存。Panda 系 `getPossibleAndSetBreakpointByUrl` 只接受 `{"locations":[{url,lineNumber,columnNumber}]}`（回 `id:"invalid"`＝该 url 暂无脚本可落点）。
+- **实测可复现流程（唯一能拿到活的调试实例的方式）**：`aa appdebug -b <bundle>` → `aa force-stop <bundle>` → `aa start -a <ability> -b <bundle>` → 取 pid → `hdc fport` → 握手 → `Runtime.enable` + `Debugger.enable` → **`Runtime.runIfWaitingForDebugger`**（**关键**：放行等待调试器的应用后 runtime 才注册脚本并发出入口 `Debugger.paused`「Break on start」；不发明这条消息就是"空会话"：无 scriptParsed、pause 不触发）→ 之后 `Debugger.scriptParsed` 陆续到达。
+- **单客户端**：同一 ark 目标并发第二条 WS **连 101 都拿不到**（静默挂起）——握手必须带超时（6s），超时报"被 DevEco/其它会话占用"。
+- **求值实测**：`evaluateOnCallFrame("1+1")` 在入口暂停帧返回 `{"type":"undefined"}`（入口帧无局部变量），`globalThis` 返回带 `objectId` 的对象；**别把 undefined 当失败**。
+- **会话生命周期**：`index.js` 持有 `this._debugSessions`（pid → session），插件 dispose 时逐个 `close()` 并 `fport rm`（**漏规则会挡住下一次 attach**）。同一 pid 重复 attach 复用会话；多会话时工具要求显式给 `pid`。
+- **端口**：`pickFreePort()` 取空闲端口；`hdc fport` 回 `[Fail]TCP Port listen failed at <p>` 说明端口被占（残留规则/别的会话），**换端口重试**（最多 3 次）而不是连进别人的端口。
+
 ## 开发 / 验证
 
 ```bash
-npm run check              # 全部 JS 语法检查
-npm test                   # 93 个单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影与子树截断/mac .app 路径补全/自定义组件/字体属性/devId 解析/ps -ef 包名→pid 解析）
+npm run check              # 全部 JS 语法检查（含 3 个新模块）
+npm test                   # 101 个单元测试（原 93 + 命令构造/解析 + 调试协议纯函数）
+node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --attach   # 真机/模拟器跑 agent 调试工具（不依赖 DSH）
 dsh plugin --profile web add .   # 本地安装/重装
 ```
 

@@ -19,6 +19,16 @@ import {
   hitTest, readPngSize,
   LEVEL_SEVERITY, formatHilogLevel, devecoExec
 } from '../harmony-device.mjs'
+import {
+  shellQuote, isBundleName, isAbilityName,
+  buildBundleInfoCommand, parseBundleInfo,
+  buildStartAbilityCommand, buildForceStopCommand, buildAppDebugCommand,
+  buildProcessListCommand
+} from '../harmony-tools.mjs'
+import {
+  debuggerForwardTarget, buildDebuggerForwardArgs, buildDebuggerForwardRemoveArgs,
+  isDebuggerError, summarizeCallFrames, formatCallFrameLines
+} from '../harmony-debugger.mjs'
 
 test('loadConfig returns empty when file missing', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'dsh-deveco-'))
@@ -1571,4 +1581,89 @@ test('ensureDiscovery returns normalized cached shape', async () => {
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------------------
+// harmony-tools：agent 工具面的命令构造与解析（不触网、不碰设备）
+// ---------------------------------------------------------------------------
+
+test('shellQuote escapes single quotes for the device shell', () => {
+  assert.equal(shellQuote('abc'), "'abc'")
+  assert.equal(shellQuote("it's"), "'it'\\''s'")
+  assert.equal(shellQuote(''), "''")
+})
+
+test('parseBundleInfo reads the bundle json body', () => {
+  const text = 'com.example.demo:\n' + JSON.stringify({
+    mainElementName: 'EntryAbility',
+    abilities: [{ name: 'EntryAbility' }, { name: 'OtherAbility' }],
+  }, null, 2)
+  const info = parseBundleInfo(text)
+  assert.equal(info.bundle, 'com.example.demo')
+  assert.equal(info.mainAbility, 'EntryAbility')
+  assert.deepEqual(info.abilities, ['EntryAbility', 'OtherAbility'])
+  assert.equal(info.json.mainElementName, 'EntryAbility')
+})
+
+test('buildAppDebugCommand marks the app for wait-for-debugger launch', () => {
+  const r = buildAppDebugCommand('com.example.demo')
+  assert.equal(r.ok, true)
+  assert.equal(r.command, "aa appdebug -b 'com.example.demo'")
+  assert.equal(buildAppDebugCommand('bad name').ok, false)
+})
+
+test('parseBundleInfo finds the stage-model main ability inside hapModuleInfos', () => {
+  const text = 'com.example.demo:' + String.fromCharCode(10) + JSON.stringify({
+    hapModuleInfos: [{ moduleName: 'entry', mainElementName: 'EntryAbility', abilities: [{ name: 'EntryAbility' }] }],
+  }, null, 2)
+  const info = parseBundleInfo(text)
+  assert.equal(info.mainAbility, 'EntryAbility')
+  assert.equal(info.moduleName, 'entry')
+  assert.deepEqual(info.abilities, ['EntryAbility'])
+})
+
+test('buildStartAbilityCommand validates names and supports debug', () => {
+  const r = buildStartAbilityCommand({ bundle: 'com.example.demo', ability: 'EntryAbility', debug: true })
+  assert.equal(r.ok, true)
+  assert.equal(r.command, "aa start -b 'com.example.demo' -a 'EntryAbility' -D")
+  assert.equal(buildStartAbilityCommand({ bundle: 'bad name' }).ok, false)
+  assert.equal(buildStartAbilityCommand({ bundle: 'com.example.demo', ability: 'a b' }).ok, false)
+})
+
+// ---------------------------------------------------------------------------
+// harmony-debugger：ArkTS 调试协议的纯函数（协议形状来自实测报文）
+// ---------------------------------------------------------------------------
+
+test('debugger forward targets use the ark:<pid>@Debugger form', () => {
+  assert.equal(debuggerForwardTarget(3308), 'ark:3308@Debugger')
+  assert.deepEqual(buildDebuggerForwardArgs(19011, 3308), ['fport', 'tcp:19011', 'ark:3308@Debugger'])
+  assert.deepEqual(buildDebuggerForwardRemoveArgs(19011, 3308), ['fport', 'rm', 'tcp:19011', 'ark:3308@Debugger'])
+})
+
+test('isDebuggerError detects ArkVM errors carried inside result', () => {
+  // 实测：失败不是 JSON-RPC error，而是 result.code/result.message
+  assert.equal(isDebuggerError({ code: 1, message: 'Can only perform operation while paused' }), true)
+  assert.equal(isDebuggerError({ message: 'Unknown file name.' }), true)
+  assert.equal(isDebuggerError({ protocols: [] }), false)
+  assert.equal(isDebuggerError({ breakpointId: 'id:10:0:url' }), false)
+  assert.equal(isDebuggerError(null), false)
+})
+
+test('summarizeCallFrames projects the paused frames', () => {
+  const frames = summarizeCallFrames([
+    {
+      callFrameId: '0',
+      functionName: 'func_main_0',
+      url: 'entry|hrouter|2.0.0|src/main/ets/api/module-factory.ts',
+      location: { scriptId: '0', lineNumber: -1, columnNumber: 0 },
+    },
+  ])
+  assert.equal(frames.length, 1)
+  assert.equal(frames[0].functionName, 'func_main_0')
+  assert.equal(frames[0].lineNumber, -1)
+  assert.equal(frames[0].scriptId, '0')
+  const lines = formatCallFrameLines(frames)
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /^#0 func_main_0 @ entry\|hrouter\|2\.0\.0\|/)
+  assert.deepEqual(formatCallFrameLines([]), [])
 })

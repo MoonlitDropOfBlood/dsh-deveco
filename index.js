@@ -73,6 +73,8 @@ import {
   parseTconnResult,
   readPngSize,
 } from "./harmony-device.mjs";
+import { buildHarmonyAgentTools } from "./harmony-agent-tools.mjs";
+import { buildDebuggerForwardRemoveArgs } from "./harmony-debugger.mjs";
 
 /**
  * Mark one instance method as a Remote export without relying on decorator
@@ -406,6 +408,8 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     this._configDir = join(dshHome(), "data", "dsh-deveco");
     /** streamId → { child, buffer: Array<object>, closed: boolean, error?: string } */
     this._streams = new Map();
+    /** pid → ArktsDebuggerSession（ArkTS 运行时调试会话，单 pid 单客户端） */
+    this._debugSessions = new Map();
     this._discovery = null;
     /** In-memory copy of the persisted config, loaded in [Service.init](). */
     this._config = { schemaVersion: 1, studioPath: "", cltPath: "", updatedAt: 0 };
@@ -448,14 +452,36 @@ export class HarmonyDevEcoService extends TypertRemoteService {
         this._ctx.inject(["tools"], (injected) => {
           const tools = injected.get("tools");
           if (!tools || typeof tools.register !== "function") return;
-          let off;
+          const disposers = [];
+          const register = (tool, label) => {
+            try {
+              const off = tools.register(tool);
+              if (typeof off === "function") disposers.push(off);
+            } catch (_) {
+              // 工具名冲突等：不阻断其它工具与 Remote 面
+              void label;
+            }
+          };
+          register(buildHarmonyUiTreeTool(defineTool, this), "harmony_ui_tree");
+          // ArkTS 运行时调试器工具面（harmony_debug）。Host 只提供执行与设备
+          // 传输；命令构造、解析与会话状态机都在 harmony-agent-tools.mjs。
+          // 日志与应用管理不重复造轮子——agent 直接用 devecocli log / device app。
           try {
-            off = tools.register(buildHarmonyUiTreeTool(defineTool, this));
-          } catch (_) {
-            return; // 工具名冲突等：不阻断 Remote 面
-          }
-          if (typeof off === "function" && typeof this._ctx.effect === "function") {
-            this._ctx.effect(() => off); // plugin dispose 时注销
+            const host = {
+              sessions: this._debugSessions,
+              hdc: (argv, timeoutMs) => this._hdcRun(argv, timeoutMs),
+              shell: (command, device, timeoutMs) => this._deviceShell(command, device, timeoutMs),
+            };
+            for (const tool of buildHarmonyAgentTools({ defineTool, host })) {
+              register(tool, tool && tool.name);
+            }
+          } catch (_) { /* 调试工具面不可用：保留 harmony_ui_tree */ }
+          if (typeof this._ctx.effect === "function" && disposers.length > 0) {
+            this._ctx.effect(() => () => {
+              for (const off of disposers) {
+                try { off(); } catch (_) { /* best effort */ }
+              }
+            });
           }
         });
       }
@@ -491,6 +517,15 @@ export class HarmonyDevEcoService extends TypertRemoteService {
         try { s.child.kill(); } catch (_) { /* */ }
       }
       this._streams.clear();
+      // Close every ArkTS debugger session and drop its hdc forward rule; a
+      // leaked `fport` rule would block the next attach on the same pid.
+      for (const [, session] of this._debugSessions) {
+        try { session.close(); } catch (_) { /* */ }
+        try {
+          this._hdcRun(buildDebuggerForwardRemoveArgs(session.port, session.pid), 8000).catch(() => {});
+        } catch (_) { /* */ }
+      }
+      this._debugSessions.clear();
     });
   }
 
@@ -542,6 +577,66 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       const msg = (e && e.message) ? e.message : String(e);
       return err("cli-failed", msg);
     }
+  }
+
+  /**
+   * Run one `hdc` invocation for the agent tools. Unlike `_runHdc` (which
+   * normalizes `hdc tconn` semantics and treats exit-0-with-`[Fail]` as an
+   * error), this returns the raw stdout/stderr and only normalizes hard
+   * failures — tools decide what `[Fail]` means for their own command.
+   *
+   * @param {string[]} argv Arguments after the executable (no `-t` needed here).
+   * @param {number} [timeoutMs]
+   * @returns {Promise<{ ok: boolean, stdout: string, stderr: string, error?: { code: string, message: string } }>}
+   */
+  async _hdcRun(argv, timeoutMs = 20000) {
+    const hdc = this._resolveHdcPath();
+    if (!hdc) {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: "",
+        error: { code: "no-hdc", message: "未找到 hdc：请在设置 → HarmonyOS Suite 配置 DevEco Studio 或 Command Line Tools 路径。" },
+      };
+    }
+    try {
+      const r = await execHdc(hdc, argv, { timeout: timeoutMs });
+      const stdout = r.stdout || "";
+      const stderr = r.stderr || "";
+      return { ok: true, stdout, stderr };
+    } catch (e) {
+      const stdout = (e && e.stdout) || "";
+      const stderr = (e && e.stderr) || "";
+      if (e && e.timedOut) {
+        return {
+          ok: false,
+          stdout,
+          stderr,
+          error: { code: "hdc-timeout", message: `hdc ${argv[0] || ""} 超时（${Math.round(timeoutMs / 1000)}s）` },
+        };
+      }
+      return {
+        ok: false,
+        stdout,
+        stderr,
+        error: {
+          code: "hdc-failed",
+          message: ((e && e.message) ? e.message : String(e)) || stderr.trim() || "hdc 执行失败",
+        },
+      };
+    }
+  }
+
+  /**
+   * Run one command inside the device shell (`hdc [-t <serial>] shell '<cmd>'`).
+   *
+   * @param {string} command Device shell command line (quote user text first).
+   * @param {string} [device] Target serial; omit for the single connected target.
+   * @param {number} [timeoutMs]
+   */
+  async _deviceShell(command, device, timeoutMs = 20000) {
+    const argv = device ? ["-t", device, "shell", command] : ["shell", command];
+    return this._hdcRun(argv, timeoutMs);
   }
 
   // ---- config / discovery --------------------------------------------------

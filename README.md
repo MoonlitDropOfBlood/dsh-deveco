@@ -16,7 +16,7 @@
 
 ---
 
-为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web UI 打造的 **HarmonyOS 全栈开发套件**插件：HiLog 检查器、Chrome DevTools 风格 ArkUI Inspector（截图点选 + 组件树 + 盒模型声明值 + 自定义组件名）、ArkTS 语法高亮 .ets 查看器、工具链与设备管理，以及对话内 agent 可直接调用的 `harmony_ui_tree` 工具。
+为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web UI 打造的 **HarmonyOS 全栈开发套件**插件：HiLog 检查器、Chrome DevTools 风格 ArkUI Inspector（截图点选 + 组件树 + 盒模型声明值 + 自定义组件名）、ArkTS 语法高亮 .ets 查看器、工具链与设备管理，以及对话内 agent 可直接调用的 `harmony_ui_tree` / `harmony_debug` 工具。
 
 > **兼容性**：支持 DSH **`^0.2.0-rc.1`**（0.2.x；本插件深度依赖 0.2.0 API——官方右侧边栏 `sidebarRightTabs`、设置页、agent 工具 `ctx.tools`，**0.1.x 无右侧边栏，不受支持**）。`engines.dsh` 与 peerDependencies 同步声明。发布走 GitHub `v*` 标签 → Actions 自动构建测试 + GitHub Release + npm（`@duke-dsh-plugins` 组织，OIDC Trusted Publishing）。
 
@@ -29,6 +29,9 @@
 
 ### Agent 工具（对话内可调用）
 - **`harmony_ui_tree`**：把 DevEco 调试源取树注册为 DSH 的 agent 工具（`ctx.tools`），对话里的 agent 可直接调用，返回**缩进树文本**（或 `format=json` 完整节点）——节点含组件名、bounds、文本与 **padding/margin/border 声明值**；JSON 中每个节点带裁剪前原始直接子节点数 `childCount`（裁剪为叶子也不归零）。Swiper 在 `displayCount` 未配置或 ≤1 时只完整展开 `currentIndex` 页，其他页保留一层（`TabContent` 两层），`displayCount>1` 时不裁剪。支持 `device` / `pid` / `package_name` 定位目标、`include_attrs` 附带全部原始属性、`max_nodes` 截断保护。前置条件同 DevEco 调试源（debug 应用、DevEco Inspector 面板未占用）。
+- **`harmony_debug`**：**ArkTS 运行时调试器**（与 DevEco Studio 同款通道：`hdc fport ark:<pid>@Debugger` + 裸 socket WebSocket + CDP 风格 JSON-RPC）。动作：`attach`（`launch=true` 走已验证的 wait-for-debugger 流程：`aa appdebug` → force-stop → `aa start` → fport → 握手 → `Runtime.runIfWaitingForDebugger`）、`status` / `scripts`（已加载脚本 url，断点必须逐字匹配）、`set_breakpoint` / `remove_breakpoint` / `breakpoints`、`pause` / `resume` / `step`（over/into/out）、`run`、`stack`（调用栈）、`evaluate`（暂停帧求值——该 runtime 不支持 `Runtime.evaluate`）、`properties`（展开远程对象）、`exceptions`（none/uncaught/all）、`events`、`detach`。前置条件：应用必须是 **debug 签名**；同一 pid 同时只允许一个调试客户端（DevEco 调试会话开着时 attach 会连不上）。
+
+> 日志与应用管理不另做工具——直接用官方 CLI：`devecocli log`（`--level/--keyword/--bundle-name/--tail/--format json/--follow`）与 `devecocli device app list|info|start|stop|install|uninstall`（`device app info --format json` 里含 `applicationInfo.appProvisionType`，即 debug 签名判定）。
 
 ### .ets 文件查看器
 - 注册为官方侧边栏 file tab（`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤），`extension` 优先级优先于内置 text editor
@@ -76,7 +79,10 @@ dsh plugin --profile web add .
 
 ```bash
 npm run check    # 全部 JS 语法检查
-npm test         # 93 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析）
+npm test         # 101 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析 + agent 工具命令构造与调试协议纯函数）
+
+# 真机 / 模拟器跑一遍 agent 调试工具（不依赖 DSH）
+node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <你的 debug 包名> --attach
 ```
 
 **改插件后必须重启 DSH** 生效（Host 加载、typert 注册、client bundle 注入都在启动时发生）。
