@@ -29,7 +29,7 @@ dsh-deveco/
 ├── harmony-debugger.mjs      # 零依赖：ArkTS 运行时调试器会话（裸 socket WS + CDP 风格 JSON-RPC；断点/暂停/单步/求值/属性）
 ├── harmony-agent-tools.mjs   # 零依赖：agent 工具定义（harmony_debug），执行经 host 端口注入
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 101 个独立核心单元测试（原 93 + 命令构造/解析 + 调试协议纯函数）
+├── scripts/self-test.mjs     # 105 个独立核心单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归）
 ├── scripts/e2e-agent-tools.mjs  # 真机/模拟器跑 agent 调试工具的端到端探针（不依赖 DSH）
 ├── docs/arkts-debug-recon.md        # ArkTS 调试协议实测调研（615 行，每条结论带证据与置信度）
 ├── docs/recon-scripts/               # 调研用探针（arkts-debug-probe*.mjs、jar 常量池提取脚本）
@@ -76,7 +76,10 @@ export class HarmonyDevEcoService extends TypertRemoteService {
 - **必须自挂载** Remote 命名空间：`await ctx.remote.$mount(CLIENT_REMOTE)`（`dsh-api-remotes` 只挂载官方命名空间）。调用走 `ctx.get('remote.harmonyDevEco')`（**不要**写进 inject）。codecs 用 passthrough schema（`{ parse: (v) => v }`，浏览器没有 zod）。
 - **官方右侧边栏集成（DSH 0.2.0 `sidebarRightTabs`）**：两阶段注册——① `ctx.inject(["sidebarRightTabs"], (injected) => { const tabs = injected.get("sidebarRightTabs"); ... tabs.register({id, kind, patterns?, canOpen?, priority:"extension", title, guide?}) })` 声明 tab 类型；② `ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({name:"sidebar.right.pane.tab", key:<同 id>, inject:(sessionId)=>({sessionId})}, BodyComponent))` 绑定 body。slot 注册可能在 type 注册成功后失败（dispose 竞态），disposer 收集后失败回滚。**tab 定义 id 与 slot key 必须相同**。body 组件由 slot 系统自动注入 `props.useTabInfo()`（`info.tab.navigation.address` 取文件地址），inject 回调只提供自定义 props。
 - **设置页注册**：`ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'harmony-deveco', order: 40, label: () => 'HarmonyOS Suite' }, HarmonySettingsPage))`。0.2.0 移除了 `settingsScope` 与 `settings.plugin.item`；路径读写走 `setStudioPath`/`setCltPath`/`getConfig` Remote，Host 侧经 harmony-config.mjs 持久化到 config.json。
-- **设置导航图标**：DSH 0.1.x `settings.section` 只投影 `id/order/label`，设置壳对每个外部 section 统一画通用齿轮。`client.js` 的 `registerSettingsNavIcon(SETTINGS_LABEL)` 用 MutationObserver 给 `[role="dialog"] nav button` 中文本等于 section label 的行打 `data-dsh-deveco-settings-nav` 标记，CSS 再隐藏 `>svg:first-child` 齿轮、用 `currentColor` mask 画 smartphone Lucide 图标（16px，跟随原生 hover/active 颜色）。换图标只需替换 CSS 里 data URI 的 SVG path。
+- **设置导航图标（DSH 0.2.2-rc.1 起）**：新增 `settings.section.icon` slot 类型——插件以**与 `settings.section` 相同的 id** 注册图标组件，设置壳就用它替换通用齿轮：`ctx.slots.inject('settings.section.icon', () => ctx.slots.register({ name: 'settings.section.icon', id: 'harmony-deveco', label: () => 'HarmonyOS Suite' }, HarmonySettingsNavIcon))`。壳把图标渲染进自己的 `span.navIcon` 装饰容器（`aria-hidden`），**外壳负责按钮、标签、容器，插件只画字形**；owner props 只有 `{ size: number, active: boolean }`。**只有 `id` 起作用**——图标组件的 `label` 不显示、`order` 对图标无意义（壳按 `only: row.id` 过滤图标账本），别照抄 section 的 `order` 免得误导读者。**旧壳（无此 slot）行为**：inject 回调永不触发（slot 由设置壳声明，老版本不声明），壳继续画齿轮——不报错、不重复图标，**无需 try/catch**。
+  - **2026-11 修复（双图标 bug）**：0.2.0 的实现用 MutationObserver 给 nav 按钮打 `data-dsh-deveco-settings-nav` 标记 + CSS `[data-dsh-deveco-settings-nav]>svg:first-child{display:none}` 隐藏齿轮。0.2.2-rc.1 把齿轮挪进了 `span.navIcon`，`>svg:first-child` **匹配不到齿轮**（`>svg` 是 span 的子元素，不是 button 的），于是自定义图标与核心齿轮**同时显示**。现已删除整套 MutationObserver + CSS 补丁，改用官方 slot。**教训：DOM 形状类补丁对上游壳的 DOM 改动极其脆弱；上游一旦提供正式 API 就立即迁移并删掉 hack**（留着 hack 只会在新版壳上双图标）。
+  - **图标字形规格**：与 `dsh-client-ui-primitives` 的 outline 图标一致——16×16 viewBox、`fill:none`、`stroke:currentColor`、`strokeWidth:1.3`（ICON_MEDIUM_STROKE）、`strokeLinecap/Linejoin:round`。`currentColor` 让它自动跟随 nav 行的 hover/active 颜色，无需自己写颜色变量。（规格从 **web-frontend 打包产物**核对：`dsh-web-frontend/dist/assets/index-*.js` 里 `ICON_MEDIUM_STROKE=1.3`、图标工厂 `viewBox:"0 0 16 16"` + `fill:"none"` + `stroke:"currentColor"`——primitives 本身没有以独立包形式装在 node_modules 里，只有打包产物。）
+  - **版本下限**：自定义图标需要 **DSH ≥ 0.2.2-rc.1**（`settings.section.icon` 才有）；0.2.0 / 0.2.1 上 inject 永不触发 → 壳画通用齿轮（**功能不缺失，只是图标回退**，页面与工具链全部照常）。若要连 0.2.0/0.2.1 也保留手机图标，就得把整套 DOM 补丁留着——**不值得**：那个补丁正是双图标 bug 的成因，且它对上游壳的 DOM 形状零容错。
 - CSS 用 `document.createElement("style")` + `ctx.effect(() => () => styleTag.remove())`；颜色一律 `--dsw-alias-*` / `--dsw-specific-*` / `--dsw-shadow-*`。
 - **Component 一律 bundle 作用域定义**（不内联创建）：内联创建会在每次父级 re-render 时拿到新的 component identity，导致 React 卸载并重建子树、丢失输入态。
 
@@ -192,7 +195,7 @@ Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的
 
 ```bash
 npm run check              # 全部 JS 语法检查（含 3 个新模块）
-npm test                   # 101 个单元测试（原 93 + 命令构造/解析 + 调试协议纯函数）
+npm test                   # 105 个单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --attach   # 真机/模拟器跑 agent 调试工具（不依赖 DSH）
 dsh plugin --profile web add .   # 本地安装/重装
 ```
@@ -200,7 +203,7 @@ dsh plugin --profile web add .   # 本地安装/重装
 **改插件后必须重启 DSH** 生效（Host 加载、typert 注册、client bundle 注入都在启动时发生）。
 
 端到端验证清单：
-1. 设置 → 侧栏导航出现 **HarmonyOS Suite**（图标：手机，smartphone Lucide）
+1. 设置 → 侧栏导航出现 **HarmonyOS Suite**（图标：手机，smartphone，16px `currentColor`；**只出现这一个图标**——壳的通用齿轮不应同时出现，出现即为双图标回归）
 2. 打开 HarmonyOS Suite 设置页：能看到「未配置」状态徽章（红色 err）
 3. 输入一个 CLT 路径（含版本号如 `26.0.0`）→ 点「应用」→ 状态变绿；输入 Studio 路径 → 状态变 Studio
 4. 设置面板的「HarmonyOS Suite」页 → 验证「DevEco Studio 路径」「HarmonyOS Command Line Tools 路径」互斥（应用 CLT 清空 Studio，反之亦然）
@@ -246,7 +249,8 @@ dsh plugin --profile web add .   # 本地安装/重装
 - **颜色一律 dsw token**：禁止硬编码 hex/rgba（亮/暗主题下必有一边翻车）。需要透明色用 `color-mix(in srgb, var(--dsw-...) 15%, transparent)`。
 - **`Component.createElement` 必须 bundle 作用域定义**：内联创建（如 `() => React.createElement(...)` 返回值直接传给 slots.register）会每次 render 重新创建 component identity，导致 React 卸载并重建子树、丢失输入态。
 - **sidebarRightTabs 不可用时跳过 tab/viewer 注册**（graceful degrade）：`ctx.inject(["sidebarRightTabs"], ...)` 回调里 `tabs === undefined` 直接返回；不影响 settings 与 Remote 通信。
-- **兼容性 gate（0.2.0 实测）**：`dsh-app-boot` 的 `evaluatePluginCompatibility` 只检查 peerDependencies 中名字以 `@deepseek-ai/dsh` 开头的条目；`^0.2.0` **不匹配** `0.2.0-rc.2` 这类 prerelease（node-semver 只放行「同 tuple 且带预发布标签的比较符」匹配预发布版），范围要写 `^0.2.0-rc.1` 这类**预发布起点**形式，peers 与 `engines.dsh` 保持同步。不通过则插件在任何代码加载前被静默禁用。**支持范围只写 `^0.2.0-rc.1`（用户决策）**：本插件深度依赖 0.2.0 API（`sidebarRightTabs` / `settings.section` / `ctx.tools` / workspaceFiles），**0.1.x 连右侧边栏都没有，禁止声称支持**（曾误写 `^0.1.0-rc.7 || ^0.2.0-rc.1` 双段范围被用户纠正）。
+- **兼容性 gate（0.2.0 实测，0.2.2-rc.1 复核）**：`dsh-app-boot` 的 `evaluatePluginCompatibility` 只检查 peerDependencies 中名字以 `@deepseek-ai/dsh` 开头的条目；`^0.2.0` **不匹配** `0.2.0-rc.2` 这类 prerelease（node-semver 只放行「同 tuple 且带预发布标签的比较符」匹配预发布版），范围要写 `^0.2.0-rc.1` 这类**预发布起点**形式，peers 与 `engines.dsh` 保持同步。不通过则插件在任何代码加载前被静默禁用。**支持范围只写 `^0.2.0-rc.1`（用户决策）**：本插件深度依赖 0.2.0 API（`sidebarRightTabs` / `settings.section` / `ctx.tools` / workspaceFiles），**0.1.x 连右侧边栏都没有，禁止声称支持**（曾误写 `^0.1.0-rc.7 || ^0.2.0-rc.1` 双段范围被用户纠正）。
+  - **gate 实际用 `semver.satisfies(runtime, range, { includePrerelease: true })`**（`dsh-app-boot/lib/index.js` 的 `satisfies()`，2026-11-04 实测）——所以**普通 node-semver 的 prerelease 陷阱在 gate 这里不成立**：`^0.2.0-rc.1 || ^0.2.1-rc.0` **匹配 0.2.2-rc.1**（实测 true），本插件在 0.2.2-rc.1 上不会被 gate 拦。写范围时仍按上面的「预发布起点」形式（别用裸 `^0.2.0`，也别把上限写成 `<0.3.0` 之外的形状），因为 npm/pnpm 侧的普通 semver 语义没有这个宽松开关。
 - **codec 双形态（0.2.0 实测）**：TYPERT invocation 的 codec 对象必须同时带 `schema`（≤0.1.5 校验器读）与 `create: () => schema`（≥0.1.7 / 0.2.0 调 `codec.create()`）；只给 `schema` 会在 0.2.0 下挂掉。
 - **`dsh.client.external` 已废弃**：0.2.0 无消费者，package.json 不再声明。
 - **npm 发布必须 `--registry=https://registry.npmjs.org`**（本机默认 registry 被 npmmirror 覆盖）。

@@ -17,6 +17,8 @@
  *      Command Line Tools paths, three-platform auto-discovery, studio↔clt
  *      mutual exclusion) and a 设备管理 section (device list with one-click
  *      disconnect for network targets + the `hdc tconn` IP connect form).
+ *      Its navigation icon is contributed through the official
+ *      `settings.section.icon` slot (DSH 0.2.2-rc.1+) under the same id.
  *
  * Host communication goes through the `harmonyDevEco` Remote namespace
  * (`ctx.get('remote.harmonyDevEco').{getConfig, setStudioPath, setCltPath,
@@ -197,9 +199,10 @@ window.__ModuleLoader__.load({
 .harm-list-item-path{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--dsw-alias-label-primary);word-break:break-all;min-width:0}
 .harm-list-item-ver{flex:none;color:var(--dsw-alias-label-secondary);font-size:11px}
 
-/* Settings nav icon: replace fallback gear with Lucide smartphone via currentColor mask */
-[data-dsh-deveco-settings-nav]>svg:first-child{display:none}
-[data-dsh-deveco-settings-nav]::before{content:'';flex:none;width:16px;height:16px;background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='20' x='5' y='2' rx='2' ry='2'/%3E%3Cpath d='M12 18h.01'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='20' x='5' y='2' rx='2' ry='2'/%3E%3Cpath d='M12 18h.01'/%3E%3C/svg%3E") center/contain no-repeat}
+/* The settings navigation icon is drawn by the official settings.section.icon
+   slot (DSH 0.2.2-rc.1) as a real SVG component — no CSS mask, no DOM patching.
+   The shell wraps it in its own span.navIcon and falls back to the generic
+   gear only when no icon is registered for that section id. */
 
 /* Plugin-config collapsible card (mirrors ui-settings-plugins PluginCard) */
 .harm-card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}
@@ -266,36 +269,11 @@ window.__ModuleLoader__.load({
 .ark-meta{color:var(--dsw-alias-label-secondary);font-size:11px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
 `;
 
-    // ---- Settings nav icon (mirror of dsh-memory-manager pattern) ---------
+    // ---- Settings navigation ----------------------------------------------
+    // The nav label is the address of our `settings.section` contribution: the
+    // icon slot below is registered under the SAME id, and the shell matches
+    // the two by id (never by label text).
     const SETTINGS_LABEL = "HarmonyOS Suite";
-    const SETTINGS_NAV_MARKER = "data-dsh-deveco-settings-nav";
-
-    function registerSettingsNavIcon(label) {
-      let disposed = false;
-      const sync = function () {
-        if (disposed) return;
-        const currentLabel = String(label).trim();
-        const buttons = document.querySelectorAll('[role="dialog"] nav button');
-        for (let i = 0; i < buttons.length; i++) {
-          const button = buttons[i];
-          const text = button.textContent ? button.textContent.trim() : "";
-          if (currentLabel.length > 0 && text === currentLabel) {
-            button.setAttribute(SETTINGS_NAV_MARKER, "");
-          } else {
-            button.removeAttribute(SETTINGS_NAV_MARKER);
-          }
-        }
-      };
-      sync();
-      const observer = new MutationObserver(sync);
-      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-      return function () {
-        disposed = true;
-        observer.disconnect();
-        const marked = document.querySelectorAll("[" + SETTINGS_NAV_MARKER + "]");
-        for (let i = 0; i < marked.length; i++) marked[i].removeAttribute(SETTINGS_NAV_MARKER);
-      };
-    }
 
     // ---- apply-scope service bindings ------------------------------------
     // Components below are defined at FACTORY scope (stable React identity),
@@ -2183,6 +2161,39 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // ---- settings navigation icon -----------------------------------------
+    // DSH 0.2.2-rc.1 added the `settings.section.icon` slot: a plugin
+    // registers an icon component under the SAME id as its `settings.section`
+    // contribution and the shell renders it inside its own `span.navIcon`
+    // wrapper instead of the generic settings gear. The shell owns the button,
+    // the label and the decorative wrapper — the component only draws the
+    // glyph.
+    //
+    // Markup mirrors dsh-client-ui-primitives' outline icons (16×16 viewBox,
+    // `fill:none`, `stroke:currentColor`, medium stroke width 1.3) so the
+    // smartphone inherits the nav row's hover/active color for free and sits
+    // at the same visual weight as the built-in account/models/plugins glyphs.
+    function HarmonySettingsNavIcon(props) {
+      const size = props && typeof props.size === "number" && props.size > 0 ? props.size : 16;
+      return React.createElement(
+        "svg",
+        {
+          width: size,
+          height: size,
+          viewBox: "0 0 16 16",
+          fill: "none",
+          xmlns: "http://www.w3.org/2000/svg",
+          "aria-hidden": "true",
+          stroke: "currentColor",
+          strokeWidth: 1.3,
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+        },
+        React.createElement("rect", { x: 3.5, y: 1.5, width: 9, height: 13, rx: 1.5 }),
+        React.createElement("path", { d: "M8 12h.01" }),
+      );
+    }
+
     function HarmonySettingsPage(props) {
       const [resolved, setResolved] = React.useState(null);
       const [discovery, setDiscovery] = React.useState(null);
@@ -2428,8 +2439,6 @@ window.__ModuleLoader__.load({
       document.head.appendChild(styleTag);
       ctx.effect(() => () => styleTag.remove());
 
-      ctx.effect(() => registerSettingsNavIcon(SETTINGS_LABEL));
-
       // ---- Official right sidebar (DSH 0.2.0 sidebarRightTabs) -------------
       // Two-stage registration, mirroring the proven pattern:
       //   stage 1 — `tabs.register({id, kind, ...})` declares the tab type;
@@ -2510,14 +2519,31 @@ window.__ModuleLoader__.load({
       ctx.effect(() => seat);
 
       // Settings page (DSH 0.2.0 `settings.section`, list scope root): an own
-      // entry in the settings navigation labeled "HarmonyOS Suite" (the
-      // registerSettingsNavIcon observer above restyles its gear icon).
+      // entry in the settings navigation labeled "HarmonyOS Suite".
       ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section",
         id: "harmony-deveco",
         order: 40,
-        label: () => "HarmonyOS Suite",
+        label: () => SETTINGS_LABEL,
       }, HarmonySettingsPage));
+
+      // Settings navigation icon (DSH 0.2.2-rc.1 `settings.section.icon`).
+      // The registration id MUST equal the section id above: the shell filters
+      // the icon ledger by the section id it is rendering, and falls back to
+      // the generic gear only when no icon is registered for that id. (Only
+      // `id` matters here — the shell ignores an icon's label and order.)
+      //
+      // On DSH releases without this slot the injection simply never fires
+      // (the slot is declared by the settings shell, which older releases do
+      // not declare) — the shell keeps its default gear. No error, and no
+      // second icon: the old CSS/DOM patch that hid the gear is gone, because
+      // the gear now lives inside `span.navIcon` and would have been drawn
+      // next to our own glyph.
+      ctx.slots.inject("settings.section.icon", () => ctx.slots.register({
+        name: "settings.section.icon",
+        id: "harmony-deveco",
+        label: () => SETTINGS_LABEL,
+      }, HarmonySettingsNavIcon));
     }
 
     exports.apply = apply;

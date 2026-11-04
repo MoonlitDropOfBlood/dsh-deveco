@@ -103,7 +103,7 @@ jobs:
             - **`harmony_debug` agent 工具**（新增）：DevEco Studio 同款 ArkTS 运行时调试通道，支持 attach / 断点 / 暂停 / 单步 / 调用栈 / 暂停帧求值；日志与应用管理继续使用官方 `devecocli`
             - **.ets 文件查看器**：保持原有 ArkTS 语法高亮能力（方法/类型/装饰器/声明式 UI 组件着色，对标 DevEco Studio）
             - 设置页 → HarmonyOS Suite：DevEco Studio / Command Line Tools 路径管理（三平台自发现 + 互斥）+ 设备管理（USB / 网络 `hdc tconn`）
-            - 22 个 Remote 方法 · 101 个单元测试
+            - 22 个 Remote 方法 · 105 个单元测试
 
             ### 📦 安装
             ```bash

@@ -1667,3 +1667,43 @@ test('summarizeCallFrames projects the paused frames', () => {
   assert.match(lines[0], /^#0 func_main_0 @ entry\|hrouter\|2\.0\.0\|/)
   assert.deepEqual(formatCallFrameLines([]), [])
 })
+
+// ---- client bundle: settings navigation icon contract --------------------
+// Regression guard for the 2026-11 double-icon bug. DSH 0.2.2-rc.1 moved the
+// settings shell's gear into a `span.navIcon` wrapper, so the plugin's old
+// `button > svg:first-child` CSS no longer matched the gear: the masked
+// plugin icon was drawn NEXT TO the core gear. The plugin now contributes the
+// glyph through the official `settings.section.icon` slot, and the DOM patch
+// must stay deleted — these assertions fail if it creeps back.
+const clientSource = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+
+test('client contributes the settings nav icon through the official slot', () => {
+  assert.match(clientSource, /ctx\.slots\.inject\("settings\.section\.icon"/)
+  assert.match(
+    clientSource,
+    /name:\s*"settings\.section\.icon"[\s\S]{0,160}?id:\s*"harmony-deveco"/
+  )
+})
+
+test('client keeps the settings section and its icon under the same id', () => {
+  const sectionId = clientSource.match(/name:\s*"settings\.section"[\s\S]{0,160}?id:\s*"([^"]+)"/)
+  const iconId = clientSource.match(/name:\s*"settings\.section\.icon"[\s\S]{0,160}?id:\s*"([^"]+)"/)
+  assert.ok(sectionId, 'settings.section registration not found')
+  assert.ok(iconId, 'settings.section.icon registration not found')
+  // The shell addresses icons by the section id it renders; a mismatch makes
+  // the icon silently never render.
+  assert.equal(iconId[1], sectionId[1])
+})
+
+test('client nav icon draws a currentColor glyph sized by the owner props', () => {
+  assert.match(clientSource, /function HarmonySettingsNavIcon\(props\)/)
+  assert.match(clientSource, /stroke:\s*"currentColor"/)
+  assert.match(clientSource, /props\.size/)
+  assert.match(clientSource, /viewBox:\s*"0 0 16 16"/)
+})
+
+test('client keeps no DOM-patch icon hack that could double the shell gear', () => {
+  assert.doesNotMatch(clientSource, /registerSettingsNavIcon/)
+  assert.doesNotMatch(clientSource, /data-dsh-deveco-settings-nav/)
+  assert.doesNotMatch(clientSource, /svg:first-child/)
+})
