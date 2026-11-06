@@ -7,7 +7,7 @@
 一个 **DeepSeek Harness（DSH）双面（Host + Client）bundle 插件**：在 DSH Web UI 提供完整的 HarmonyOS 开发能力。
 
 - **官方右侧边栏（`ctx.sidebarRightTabs`）注册两个页面 Tab**：
-  - **HiLog 检查器**（id `dsh-deveco:hilog`，guide order 50）：实时日志流（**级别/包名/关键词过滤**——级别 chips 是进缓冲的门槛（读取环）；**关键词与包名是客户端实时视图过滤**：流跑着随时改随时生效、清空即回溯，包名经 `deviceProcessPids` 把 bundle 映射成 pid 集合后按行 pid 过滤；**日志内查找**：HiLog Tab 可见时接管 Ctrl/Cmd+F 弹出查找栏——当前视图内全部命中 `<mark>` 高亮 + 计数，Enter/↓/› 下一个、Shift+Enter/↑/‹ 上一个（循环）、Esc/× 关闭，当前命中行整行描边并平滑滚动定位，定位 effect 只 keyed on 查找状态不挂 lines（日志每秒追加不得拽回视图）），基于 `devecocli log --follow` 封装
+  - **HiLog 检查器**（id `dsh-deveco:hilog`，guide order 50）：实时日志流（**级别/包名/关键词过滤**——级别 chips 是进缓冲的门槛（读取环）；**关键词与包名是客户端实时视图过滤**：流跑着随时改随时生效、清空即回溯，包名经 `deviceProcessPids` 把 bundle 映射成 pid 集合后按行 pid 过滤；**日志内查找**：HiLog Tab 可见时接管 Ctrl/Cmd+F 弹出查找栏——当前视图内全部命中 `<mark>` 高亮 + 计数，Enter/↓/› 下一个、Shift+Enter/↑/‹ 上一个（循环）、Esc/× 关闭，当前命中行整行描边并平滑滚动定位，定位 effect 只 keyed on 查找状态不挂 lines（日志每秒追加不得拽回视图）），基于 `devecocli log --follow` 封装（未安装 devecocli 时自动降级 `hdc shell hilog`，见 §12）
   - **ArkUI Inspector**（id `dsh-deveco:arkui`，guide order 51）：**Chrome Elements 风格**——左侧设备截图（`uiScreenshot` 内联 dataUrl，点击截图命中节点并以**像素级 overlay** 按 `origBounds` 真实矩形高亮），右上 **可折叠** UI 树（层级引导线 + 自定义组件单独标注 + tap/scroll 标记 + 折叠全部/展开全部 + **树搜索**），右下节点属性（**全部设备原始属性** + **属性名/值搜索**）与盒子模型；顶部**窗口下拉**切换窗口；底部 Tap/Swipe/Text 操作
   - **Projects** 项目浏览器为 v1.0 占位（listProjects 返回空数组；v1.1 路线）
 - **官方右侧边栏注册 `.ets` 文件查看器**（id `dsh-deveco:arkts`，`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤，priority `extension` 优先于内置 text editor）。提供 ArkTS 语法高亮（关键字 + 装饰器 + 注释 + 字符串 + 数字）；内容经官方 `remote.workspaceFiles.read` 分页读取（绝对路径回退插件自有 `readTextFile` Remote）。
@@ -24,12 +24,12 @@ dsh-deveco/
 ├── typert.host.js            # Typert Host manifest：harmonyDevEco Remote 服务全部 invocation 的 zod schema
 ├── harmony-studio.mjs        # 零依赖：工具链路径探测（devecocli > CLT ≥26.0.0 > Studio）+ 版本解析 + 三平台默认路径
 ├── harmony-config.mjs        # 零依赖：配置持久化 + Studio/CLT 互斥 + 自发现调度
-├── harmony-device.mjs        # 零依赖：devecocli 进程封装 + hdc IP 连接（tconn）+ HiLog/ui-layout JSON 解析 + 裸 WS 帧编解码
+├── harmony-device.mjs        # 零依赖：devecocli 进程封装 + hdc 降级命令（list targets / hilog / hidumper / uitest / screenCap）+ IP 连接（tconn）+ HiLog/ui-layout JSON 解析 + 裸 WS 帧编解码
 ├── harmony-tools.mjs         # 零依赖：调试器所需的设备命令构造/解析（bm dump 签名探测、aa appdebug/start/force-stop、ps -ef）+ 注入安全（shellQuote + 白名单正则）
 ├── harmony-debugger.mjs      # 零依赖：ArkTS 运行时调试器会话（裸 socket WS + CDP 风格 JSON-RPC；断点/暂停/单步/求值/属性）
 ├── harmony-agent-tools.mjs   # 零依赖：agent 工具定义（harmony_debug），执行经 host 端口注入
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 105 个独立核心单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归）
+├── scripts/self-test.mjs     # 113 个独立核心单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归 + hdc 降级）
 ├── scripts/e2e-agent-tools.mjs  # 真机/模拟器跑 agent 调试工具的端到端探针（不依赖 DSH）
 ├── docs/arkts-debug-recon.md        # ArkTS 调试协议实测调研（615 行，每条结论带证据与置信度）
 ├── docs/recon-scripts/               # 调研用探针（arkts-debug-probe*.mjs、jar 常量池提取脚本）
@@ -134,6 +134,14 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 3. DevEco Studio 路径 → 兜底
 4. 无 → `source: 'none'`，错误提示去设置
 
+**但 `source` 不等于「devecocli 可用」**（2026-11 修复，用户报「未安装 devecocli 就没法用」的根因）：
+
+- **`devecocli` 是独立的 npm 包 `@deveco/deveco-cli`，不随 DevEco Studio / Command Line Tools 安装**（本机 Studio 26.0.0.821 的 `bin/` 里没有它；devecocli 自己的 tool provider 也只解析 node/ohpm/hvigor/hdc，不解析 devecocli）。旧实现把 `source:'studio'|'clt'` 当成「有 CLI」，`devecoExec` 还会凭空拼 `<root>/bin/devecocli`，于是每次操作都 spawn ENOENT。
+- `resolveCli` 现在对 studio/clt **探测** `<root>/bin/devecocli[.cmd|.exe]`：存在才填 `exec`、`cliAvailable:true`；否则 `cliAvailable:false` 并进入 hdc 降级。`source:'devecocli'`（PATH）恒为 true，`source:'none'` 恒为 false。
+- `HarmonyDevEcoService._cliExec()` 再把一次 `existsSync`（任何 source 都验），确认「真的能 spawn」；**所有设备/UI 方法都先问 `_cliExec()`，为 null 就走 hdc 降级**（矩阵见 §12）。
+- `getConfig().resolved` 额外带 `cliAvailable` / `hdcAvailable`，客户端据此显示「hdc 降级（未安装 devecocli）」徽章，而不是健康的「DevEco Studio」徽章。
+- `_resolveHdcPath()` 现在把**设置里配置的** `studioPath`/`cltPath` 也加入 hdc 探测根：`source:'devecocli'` 时 `resolved.path` 为空，自定义安装目录（如 `D:\Application\Huawei\DevEco Studio`）否则永远找不到 hdc。
+
 互斥规则（用户决策）：`setCltPath` 清空 `studioPath`；`setStudioPath` 清空 `cltPath`。即使 CLT 版本不达标也优先 CLT（`minVersionOk:false` 让 UI 提示升级，不静默回退 Studio）。
 
 ### 7. 三平台默认安装路径
@@ -191,11 +199,37 @@ Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的
 - **会话生命周期**：`index.js` 持有 `this._debugSessions`（pid → session），插件 dispose 时逐个 `close()` 并 `fport rm`（**漏规则会挡住下一次 attach**）。同一 pid 重复 attach 复用会话；多会话时工具要求显式给 `pid`。
 - **端口**：`pickFreePort()` 取空闲端口；`hdc fport` 回 `[Fail]TCP Port listen failed at <p>` 说明端口被占（残留规则/别的会话），**换端口重试**（最多 3 次）而不是连进别人的端口。
 
+### 12. devecocli 缺失时的 hdc 降级矩阵（2026-11 修复）
+
+**背景**：`devecocli` 是独立 npm 包（`@deveco/deveco-cli`），用户只装 DevEco Studio / Command Line Tools 时**没有它**。旧实现里以下能力全部只走 CLI → 未安装时插件"看起来什么都没法用"。现在每个能力都有 hdc 等价实现（命令均取自 devecocli 自己的实现，见 `@deveco/deveco-cli-common/dist/cli.js`）：
+
+| 能力 | 首选（有 devecocli） | 降级（hdc，SDK 自带） |
+|---|---|---|
+| 设备列表 | `devecocli device list --format json` | `hdc list targets`（`parseHdcTargets`；跳过 `[Empty]`/unauthorized） |
+| 设备详情 | `devecocli device view -t <s>` | `hdc -t <s> shell param get const.*`（`HDC_DEVICE_PARAM_KEYS`） |
+| 历史日志 | `devecocli log … --tail` | `hdc -t <s> shell hilog -x`（`-L`/`-e`；tail 在 Host 侧切） |
+| 实时日志 | `devecocli log --follow` | `hdc -t <s> shell hilog`（客户端仍做关键词/包名/级别视图过滤） |
+| 窗口列表 | `devecocli ui window list --format json` | `hdc -t <s> shell hidumper -s WindowManagerService -a -a`（`parseWindowManagerDump`，按 `Focus window:` 标 focused、`type===1` 为应用窗口） |
+| 截图 | `devecocli ui screenshot --path` | `hdc … shell uitest screenCap -p <p>`，失败退 `snapshot_display -f <p>`，再 `hdc file recv` |
+| Tap/Swipe/Text | `devecocli ui click/swipe/text` | `hdc … shell uitest uiInput click/swipe/text`（text 用 `quoteDeviceShellArg` 单引号转义） |
+| UI 树（无障碍） | `devecocli ui layout`（hdc 不可用时） | `hdc shell uitest dumpLayout -p` + `file recv`（本来就是首选） |
+| DevEco 调试树 / 调试器 / IP 连接 / pid 映射 | — | 本来就只走 hdc |
+
+**关键约定**：
+
+- **绝不再凭空拼 CLI 路径**：`_cliExec()` 对 `devecoExec(resolved)` 的结果做 `existsSync`，为 `null` 就走 hdc；`resolveCli` 的 `cliAvailable` 是"探测结果"，不是"配置了 Studio 就算有"。
+- **hdc 也没有时**才返回 `no-toolchain`，错误信息同时给出两条路：安装 devecocli，或配置 Studio/CLT 路径（hdc 随 SDK）。
+- **`uiDump` 的降级顺序**：hdc dump 优先（有 `origBounds`）；hdc 失败且有 CLI → `devecocli ui layout`；两者都没有 → `dump-failed`（不再误报 `no-toolchain`）。
+- **`hdc … shell hilog` 的 `[Fail]` 检测**：hdc 失败也 exit 0。流在 close 时若从未产出过解析行且原始输出含 `[Fail]`，把该行写进 `stream.error`，客户端显示并停止"等待日志…"。
+- **窗口下拉必须能降级**：客户端只有在 `windowId` 有值时才渲染树；若 `uiWindowList` 失败则 `windowId=""`，即使 `uiDump` 成功树也是空的——`hidumper` 兜底因此是 Inspector 可用性的必要条件，不能省。
+- **`_capabilities()` / `resolved.cliAvailable` / `resolved.hdcAvailable`** 会随 `getConfig` 返回：客户端徽章显示「hdc 降级（未安装 devecocli）」，设备列表失败时把错误显示在 Tab 里（不再静默空下拉）。
+- **所有新增 hdc 命令构造/解析放 `harmony-device.mjs` 纯函数**（`buildHdc*` / `parseHdcTargets` / `parseWindowManagerDump`），`index.js` 只做选择与执行；新增能力必须同时补 `scripts/self-test.mjs` 的命令串断言。
+
 ## 开发 / 验证
 
 ```bash
 npm run check              # 全部 JS 语法检查（含 3 个新模块）
-npm test                   # 105 个单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归）
+npm test                   # 113 个单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归 + hdc 降级）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --attach   # 真机/模拟器跑 agent 调试工具（不依赖 DSH）
 dsh plugin --profile web add .   # 本地安装/重装
 ```
@@ -205,7 +239,7 @@ dsh plugin --profile web add .   # 本地安装/重装
 端到端验证清单：
 1. 设置 → 侧栏导航出现 **HarmonyOS Suite**（图标：手机，smartphone，16px `currentColor`；**只出现这一个图标**——壳的通用齿轮不应同时出现，出现即为双图标回归）
 2. 打开 HarmonyOS Suite 设置页：能看到「未配置」状态徽章（红色 err）
-3. 输入一个 CLT 路径（含版本号如 `26.0.0`）→ 点「应用」→ 状态变绿；输入 Studio 路径 → 状态变 Studio
+3. 输入一个 CLT 路径（含版本号如 `26.0.0`）→ 点「应用」→ **装了 devecocli 时**徽章变绿；**只装了 CLT/Studio、没装 devecocli 时**徽章显示「hdc 降级（未安装 devecocli）」（info 色，不是错误）——这正是本次修复的默认形态
 4. 设置面板的「HarmonyOS Suite」页 → 验证「DevEco Studio 路径」「HarmonyOS Command Line Tools 路径」互斥（应用 CLT 清空 Studio，反之亦然）
 5. 官方右侧边栏 Guide 菜单看到「HiLog 检查器」「ArkUI Inspector」两个入口 → 各打开 Tab
 6. HiLog Tab：选设备（先点「刷新设备」）→「开始」→ 日志流出现；**流跑着直接改过滤即时生效**：点击级别 chip、输入关键词（message/tag/domain/pid 不区分大小写子串）、输入包名（防抖 500ms 经 `deviceProcessPids` 解析 pid 集合后按行 pid 过滤；主进程 + `:render` 等后缀进程全收）→ 顶部出现「显示 M / N 行」计数；清空关键词/包名后已缓冲的行**立即全部回来**（视图过滤不丢历史）；包名未运行时提示「未找到运行进程」；**Ctrl+F**（HiLog Tab 可见时）→ 弹出查找栏 → 输入即高亮全部命中 + `n/N` 计数 → Enter/› 循环跳转（当前行描边+滚动跟随）→ Shift+Enter/‹ 反向 → Esc 关闭；切到其他 Tab 后 Ctrl+F 不被本插件接管

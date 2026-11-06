@@ -16,6 +16,10 @@ import {
   devEcoNodeSummary, devEcoTreeLines, devEcoToolNodes,
   buildUiRawDumpArgs, buildUiRawRecvArgs, buildUiRawCleanArgs,
   buildHdcConnectArgs, buildHdcDisconnectArgs, parseTconnResult, parseProcessPids, resolveHdc,
+  buildHdcListTargetsArgs, parseHdcTargets, buildHdcHilogArgs, buildHdcHilogFollowArgs,
+  buildHdcScreenCapArgs, buildHdcSnapshotDisplayArgs, buildHdcFileRecvArgs, buildHdcFileRemoveArgs,
+  buildHdcTapArgs, buildHdcSwipeArgs, buildHdcTextArgs, buildHdcWindowListArgs,
+  parseWindowManagerDump, buildHdcParamArgs, HDC_DEVICE_PARAM_KEYS, quoteDeviceShellArg,
   hitTest, readPngSize,
   LEVEL_SEVERITY, formatHilogLevel, devecoExec
 } from '../harmony-device.mjs'
@@ -1706,4 +1710,106 @@ test('client keeps no DOM-patch icon hack that could double the shell gear', () 
   assert.doesNotMatch(clientSource, /registerSettingsNavIcon/)
   assert.doesNotMatch(clientSource, /data-dsh-deveco-settings-nav/)
   assert.doesNotMatch(clientSource, /svg:first-child/)
+})
+
+// ---------------------------------------------------------------------------
+// hdc fallback channel（devecocli 未安装时的降级）
+// ---------------------------------------------------------------------------
+
+test('parseHdcTargets skips [Empty]/unauthorized and keeps serial+state', () => {
+  assert.deepEqual(parseHdcTargets('[Empty]'), [])
+  const list = parseHdcTargets([
+    '127.0.0.1:5555\tdevice',
+    '55K0225509025604\tdevice',
+    'BADDEVICE        unauthorized',
+    '',
+  ].join('\n'))
+  assert.equal(list.length, 2)
+  assert.deepEqual(list[0], { serial: '127.0.0.1:5555', name: '', state: 'device', type: '' })
+  assert.equal(list[1].serial, '55K0225509025604')
+})
+
+test('buildHdcHilogArgs snapshots with -x, follows without it, quotes keyword', () => {
+  assert.deepEqual(buildHdcHilogArgs({}), ['shell', 'hilog', '-x'])
+  assert.deepEqual(
+    buildHdcHilogArgs({ device: 'S', level: 'I' }),
+    ['-t', 'S', 'shell', 'hilog', '-x', '-L', 'I']
+  )
+  assert.deepEqual(buildHdcHilogFollowArgs({ device: 'S' }), ['-t', 'S', 'shell', 'hilog'])
+  assert.deepEqual(buildHdcHilogArgs({ keyword: 'a b' }), ['shell', 'hilog', '-x', '-e', "'a b'"])
+  assert.equal(quoteDeviceShellArg("it's"), "'it'\\''s'")
+})
+
+test('hdc screenshot/input builders use the device commands DevEco CLI uses', () => {
+  assert.deepEqual(buildHdcScreenCapArgs('/data/local/tmp/a.png'),
+    ['shell', 'uitest', 'screenCap', '-p', '/data/local/tmp/a.png'])
+  assert.deepEqual(buildHdcSnapshotDisplayArgs('/p'), ['shell', 'snapshot_display', '-f', '/p'])
+  assert.deepEqual(buildHdcFileRecvArgs('/p', 'C:/x.png'), ['file', 'recv', '/p', 'C:/x.png'])
+  assert.deepEqual(buildHdcFileRemoveArgs('/p'), ['shell', 'rm', '-f', '/p'])
+  assert.deepEqual(buildHdcTapArgs({ x: 1, y: 2 }), ['shell', 'uitest', 'uiInput', 'click', '1', '2'])
+  assert.deepEqual(buildHdcSwipeArgs({ x1: 1, y1: 2, x2: 3, y2: 4, speed: 600 }),
+    ['shell', 'uitest', 'uiInput', 'swipe', '1', '2', '3', '4', '600'])
+  assert.deepEqual(buildHdcTextArgs({ text: 'hi there' }), ['shell', 'uitest', 'uiInput', 'text', "'hi there'"])
+})
+
+test('parseWindowManagerDump parses the hidumper window table + focus', () => {
+  const dump = [
+    'WindowName          DisplayId Pid     WinId Type',
+    'EntryAbility        0         1234    31    1',
+    'StatusBar           0         100     12    2',
+    'Focus window: 31',
+    'total window: 2',
+  ].join('\n')
+  const rows = parseWindowManagerDump(dump)
+  assert.equal(rows.length, 2)
+  assert.deepEqual(rows[0], { id: 31, name: 'EntryAbility', pid: 1234, displayId: 0, type: 1, focused: true })
+  assert.equal(rows[1].focused, false)
+  assert.deepEqual(parseWindowManagerDump('no table here'), [])
+  assert.deepEqual(buildHdcWindowListArgs(),
+    ['shell', 'hidumper', '-s', 'WindowManagerService', '-a', '-a'])
+})
+
+test('hdc device-info params and builder stay on the const.* system keys', () => {
+  assert.ok(HDC_DEVICE_PARAM_KEYS.includes('const.product.model'))
+  assert.deepEqual(buildHdcParamArgs('const.product.model'),
+    ['shell', 'param', 'get', 'const.product.model'])
+})
+
+test('resolveCli marks studio without devecocli as cli-unavailable (hdc degradation)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-deveco-studio-'))
+  const binName = process.platform === 'win32' ? 'devecocli.cmd' : 'devecocli'
+  try {
+    const r = resolveCli({ studioPath: root, cltPath: '', overrideExec: '', pathEnv: '', dshDevecoCli: '' })
+    assert.equal(r.source, 'studio')
+    assert.equal(r.cliAvailable, false)
+    assert.equal(r.exec, undefined)
+    assert.match(r.message, /未检测到 devecocli/)
+
+    mkdirSync(join(root, 'bin'), { recursive: true })
+    writeFileSync(join(root, 'bin', binName), 'probe\n')
+    const r2 = resolveCli({ studioPath: root, cltPath: '', overrideExec: '', pathEnv: '', dshDevecoCli: '' })
+    assert.equal(r2.cliAvailable, true)
+    assert.equal(r2.exec, join(root, 'bin', binName))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('resolveCli marks clt without devecocli as cli-unavailable', () => {
+  const r = resolveCli({
+    studioPath: '',
+    cltPath: 'C:\\fake\\clt\\26.0.0',
+    overrideExec: '',
+    pathEnv: '',
+    dshDevecoCli: '',
+  })
+  assert.equal(r.source, 'clt')
+  assert.equal(r.cliAvailable, false)
+  assert.match(r.message, /未检测到 devecocli/)
+})
+
+test('client surfaces the hdc-degraded badge and device-list errors', () => {
+  assert.match(clientSource, /hdc 降级/)
+  assert.match(clientSource, /cliAvailable === false/)
+  assert.match(clientSource, /设备列表获取失败/)
 })

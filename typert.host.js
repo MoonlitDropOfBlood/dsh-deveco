@@ -56,6 +56,11 @@ const resolvedSchema = z
     path: z.string().readonly().optional(),
     version: z.union([z.array(z.number()).readonly(), z.string().readonly()]).optional(),
     minVersionOk: z.boolean().readonly(),
+    // Runtime capability probes (not part of the pure resolver): whether a
+    // real devecocli binary exists and whether the SDK-bundled hdc was found.
+    // Both are optional for backward compatibility with older Host halves.
+    cliAvailable: z.boolean().readonly().optional(),
+    hdcAvailable: z.boolean().readonly().optional(),
     message: z.string().readonly(),
   })
   .readonly();
@@ -851,7 +856,7 @@ export const TYPERT = {
           {
             name: "HarmonyDevEcoGetConfigResult",
             declaration:
-              "export type HarmonyDevEcoGetConfigResult = { ok: true; value: { config: { studioPath: string; cltPath: string; updatedAt: number }; resolved: { source: 'devecocli'|'clt'|'studio'|'none'; exec?: string; path?: string; version?: readonly number[] | string; minVersionOk: boolean; message: string }; discovery: HarmonyDevEcoDiscovery | null } } | { ok: false; error: { code: string; message?: string } };",
+              "export type HarmonyDevEcoGetConfigResult = { ok: true; value: { config: { studioPath: string; cltPath: string; updatedAt: number }; resolved: { source: 'devecocli'|'clt'|'studio'|'none'; exec?: string; path?: string; version?: readonly number[] | string; minVersionOk: boolean; cliAvailable?: boolean; hdcAvailable?: boolean; message: string }; discovery: HarmonyDevEcoDiscovery | null } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
             name: "HarmonyDevEcoPathRequest",
@@ -1023,7 +1028,7 @@ export const TYPERT = {
           {
             name: "HarmonyDevEcoResolved",
             declaration:
-              "export interface HarmonyDevEcoResolved {\n    readonly source: 'devecocli'|'clt'|'studio'|'none';\n    readonly exec?: string;\n    readonly path?: string;\n    readonly version?: readonly number[] | string;\n    readonly minVersionOk: boolean;\n    readonly message: string;\n}",
+              "export interface HarmonyDevEcoResolved {\n    readonly source: 'devecocli'|'clt'|'studio'|'none';\n    readonly exec?: string;\n    readonly path?: string;\n    readonly version?: readonly number[] | string;\n    readonly minVersionOk: boolean;\n    readonly cliAvailable?: boolean;\n    readonly hdcAvailable?: boolean;\n    readonly message: string;\n}",
           },
           {
             name: "HarmonyDevEcoDiscovery",

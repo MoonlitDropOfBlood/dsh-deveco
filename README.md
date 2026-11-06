@@ -48,10 +48,10 @@
 - 「DevEco Studio 路径」输入框 + 「扫描系统默认」+ 自发现结果列表
 - 「HarmonyOS Command Line Tools 路径」输入框 + 版本校验（≥ 26.0.0）+ 自发现结果列表
 - 「重新扫描」按钮 + 「保存 / 放弃」
-- 状态徽章（devecocli / CLT ≥26 / CLT<26 / Studio / 未配置）
+- 状态徽章（devecocli / hdc 降级（未安装 devecocli）/ CLT ≥26 / CLT<26 / Studio / 未配置）
 
 **设备管理**
-- **设备列表**：实时列出 USB / 网络设备（`devecocli device list`），网络目标（`ip:port`）带「网络」徽章，可一键「断开」（`hdc tconn <ip>:<port> -remove`）
+- **设备列表**：实时列出 USB / 网络设备（`devecocli device list`；未安装 devecocli 时自动降级 `hdc list targets`），网络目标（`ip:port`）带「网络」徽章，可一键「断开」（`hdc tconn <ip>:<port> -remove`）
 - **IP 网络连接**：输入设备 IP 和端口（**端口必填**——hdc 无默认端口，须与设备开启调试后暴露的端口一致）后「连接」，底层执行 `hdc tconn <ip>:<port>`；连接/断开后列表自动刷新。devecocli 本身没有 IP 连接能力，这里直连 SDK 自带的 hdc（按 `DEVECO_SDK_HOME` → `DEVECO_HOME` → 已配置/已发现的 Studio/CLT 安装根 → PATH 顺序解析）。前提：设备已在「设置 → 开发者选项」中开启调试
 
 ## 工具链解析优先级（用户决策）
@@ -59,9 +59,28 @@
 1. **`PATH` 存在 `devecocli`** → 优先使用，**忽略设置路径**
 2. **CLT 路径 ≥ 26.0.0** → 用 CLT（与 Studio 互斥）
 3. **DevEco Studio 路径** → 兜底
-4. 无 → 错误提示去设置
+4. **都没有** → 设备/日志/截图/操作自动降级到 SDK 自带的 `hdc`；`hdc` 也找不到才提示去设置
 
 互斥规则：`setCltPath` 清空 `studioPath`；`setStudioPath` 清空 `cltPath`。
+
+> **devecocli 不是 DevEco Studio / Command Line Tools 自带的**——它是独立的 npm 包（`@deveco/deveco-cli`）。本插件在未安装它时**不会变砖**：所有设备与 UI 能力都会自动切换到 SDK 自带的 `hdc`。
+
+## 没有 devecocli 也能用（hdc 降级）
+
+装了 DevEco Studio 或 Command Line Tools（拿到 SDK 里的 `hdc`）但没有装 `devecocli` 时，插件按下面的矩阵自动降级——不需要任何额外开关：
+
+| 能力 | 有 devecocli | 没有 devecocli（hdc 降级） |
+|---|---|---|
+| 设备列表 | `devecocli device list` | `hdc list targets` |
+| 设备详情 | `devecocli device view` | `hdc shell param get const.*` |
+| 实时 / 历史日志 | `devecocli log [--follow]` | `hdc shell hilog` / `hilog -x` |
+| 窗口列表 | `devecocli ui window list` | `hdc shell hidumper -s WindowManagerService -a -a` |
+| 截图 | `devecocli ui screenshot` | `hdc shell uitest screenCap`（失败退 `snapshot_display`）+ `hdc file recv` |
+| Tap / Swipe / Text | `devecocli ui click/swipe/text` | `hdc shell uitest uiInput click/swipe/text` |
+| ArkUI 无障碍树 | — | `hdc shell uitest dumpLayout`（本来就走 hdc，不受影响） |
+| DevEco 调试树 / ArkTS 调试器 / IP 连接 / 包名→pid | — | 本来就走 hdc，不受影响 |
+
+降级状态下设置页徽章显示「**hdc 降级（未安装 devecocli）**」；设备列表获取失败时 Tab 内会显示错误原因，而不是只给一个空下拉。想用 devecocli 的完整能力（例如更友好的 `device view` 输出）时再安装即可：`npm i -g @deveco/deveco-cli`。
 
 ## 安装
 
@@ -81,7 +100,7 @@ dsh plugin --profile web add .
 
 ```bash
 npm run check    # 全部 JS 语法检查
-npm test         # 101 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析 + agent 工具命令构造与调试协议纯函数）
+npm test         # 113 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析 + agent 工具命令构造与调试协议纯函数 + hdc 降级命令/解析）
 
 # 真机 / 模拟器跑一遍 agent 调试工具（不依赖 DSH）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <你的 debug 包名> --attach

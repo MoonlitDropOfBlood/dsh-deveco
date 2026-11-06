@@ -1,8 +1,10 @@
 /**
  * harmony-device.mjs — zero-dep Node ESM.
  *
- * Wraps the `devecocli` CLI used by the HarmonyOS toolchain and provides
- * parsers for HiLog line output and ArkUI layout JSON dumps.
+ * Wraps the `devecocli` CLI used by the HarmonyOS toolchain, provides parsers
+ * for HiLog line output and ArkUI layout JSON dumps, and owns the **hdc
+ * fallback channel** (`buildHdc*` / `parseHdcTargets` /
+ * `parseWindowManagerDump`) used when devecocli is not installed.
  *
  * Design notes
  * - Zero dependencies. Only `node:child_process` (spawn), `node:fs`
@@ -10,18 +12,22 @@
  * - The `resolved` object passed around describes which CLI source the user has
  *   configured. The shape is:
  *     { source: 'devecocli'|'studio'|'clt'|'none', exec?, path? }
- *   `exec` is the absolute path to a devecocli executable when source is
- *   'devecocli'. `path` is the install root for 'studio'/'clt'.
- * - Current CLT 26 / DevEco Studio 6 bundles expose device, log and UI
- *   operations natively on devecocli (`device list|view`, `log`,
- *   `ui layout|screenshot|click|swipe|text`). There is NO
- *   `devecocli device hdc` passthrough, so every operation routes through
- *   the devecocli surface directly.
- * - One exception: devecocli has NO IP/TCP connect command (its `device`
- *   subcommands are only list/view/file/sqlite3). For IP connections we call
- *   the SDK-bundled `hdc tconn <ip>:<port>` directly; `resolveHdc` mirrors
- *   devecocli's own lookup order (DEVECO_SDK_HOME → DEVECO_HOME → Studio/CLT
- *   install root → PATH) to find the binary.
+ *   `exec` is the absolute path to a **verified** devecocli executable
+ *   (`resolveCli` probes it). `path` is the install root for 'studio'/'clt'.
+ * - **`devecocli` is NOT bundled with DevEco Studio / Command Line Tools** —
+ *   it is the separate npm package `@deveco/deveco-cli`. `source: 'studio'`
+ *   therefore does not mean the CLI exists. `HarmonyDevEcoService._cliExec()`
+ *   checks the binary and every feature falls back to the SDK's `hdc` when it
+ *   is missing (matrix in AGENTS.md §12).
+ * - devecocli exposes device, log and UI operations natively (`device
+ *   list|view`, `log`, `ui layout|screenshot|click|swipe|text`), but the hdc
+ *   equivalents in section 6 are what DevEco CLI itself shells out to, so they
+ *   are behaviourally compatible fallbacks.
+ * - devecocli has NO IP/TCP connect command (its `device` subcommands are only
+ *   list/view/file/sqlite3). For IP connections we call the SDK-bundled
+ *   `hdc tconn <ip>:<port>` directly; `resolveHdc` mirrors devecocli's own
+ *   lookup order (DEVECO_SDK_HOME → DEVECO_HOME → Studio/CLT install root →
+ *   PATH) to find the binary.
  * - All process invocations go through `execCli` / `execHdc` so error /
  *   timeout / non-zero exit semantics are uniform.
  */
@@ -41,17 +47,25 @@ function isWindows () {
 /**
  * Resolve the devecocli executable path for a resolved toolchain.
  *
- * Every device/log/UI operation in current CLT 26 / DevEco Studio 6 bundles
- * is a native devecocli subcommand, so this single executable covers
- * everything; no standalone hdc fallback is required.
+ * Device/log/UI operations are native devecocli subcommands, so one executable
+ * covers them — but the caller MUST NOT spawn it unchecked: devecocli is a
+ * separate npm package that is often absent. `HarmonyDevEcoService._cliExec`
+ * verifies existence and falls back to hdc when it is missing.
+ *
+ * `resolved.exec` wins when present: `harmony-studio.resolveCli` probes
+ * `<root>/bin/devecocli` for studio/CLT sources and only fills `exec` when the
+ * file really exists. The synthesized `<root>/bin/devecocli` below is kept as
+ * the legacy shape for callers that pass a bare root and for tests; callers
+ * must still verify existence before spawning.
  *
  * @param {object} resolved Toolchain resolution.
  * @returns {string|null} Executable path, or null when unsupported/missing.
  */
 export function devecoExec (resolved) {
   if (!resolved || !resolved.source) return null
+  if (typeof resolved.exec === 'string' && resolved.exec) return resolved.exec
   if (resolved.source === 'devecocli') {
-    return resolved.exec || null
+    return null
   }
   if (resolved.source === 'studio' || resolved.source === 'clt') {
     if (!resolved.path) return null
@@ -1768,4 +1782,195 @@ export function parseProcessPids (psText, bundle) {
     }
   }
   return Array.from(new Set(out)).sort((a, b) => a - b)
+}
+
+// ---------------------------------------------------------------------------
+// 6. hdc fallback channel（devecocli 未安装 / 不可用时的降级实现）
+// ---------------------------------------------------------------------------
+//
+// `devecocli` is a **separate** npm package (`@deveco/deveco-cli`) — it is NOT
+// bundled with DevEco Studio or Command Line Tools. When it is absent the
+// plugin must still work, so every device operation below has an hdc-backed
+// fallback. These are exactly the commands DevEco CLI itself shells out to
+// (verified in `@deveco/deveco-cli-common/dist/cli.js`), so they are the
+// authoritative degradation surface:
+//
+//   devices   → `hdc list targets`
+//   HiLog     → `hdc [-t s] shell hilog -x` (snapshot) / `hilog` (follow)
+//   windows   → `hdc [-t s] shell hidumper -s WindowManagerService -a -a`
+//   screenshot→ `hdc [-t s] shell uitest screenCap -p <p>` (fallback
+//               `snapshot_display -f <p>`) + `hdc file recv`
+//   input     → `hdc [-t s] shell uitest uiInput click|swipe|text`
+//
+// Every builder returns argv **after** the executable; the caller prepends an
+// optional `-t <serial>` target.
+
+/** `hdc list targets`. @returns {string[]} */
+export function buildHdcListTargetsArgs () { return ['list', 'targets'] }
+
+/**
+ * Parse `hdc list targets` output.
+ *
+ * Real lines: `127.0.0.1:5555`, `55K0225509025604\tdevice`, `[Empty]`.
+ * Unauthorized / offline targets are skipped (same rule as DevEco CLI).
+ *
+ * @param {string} stdout
+ * @returns {Array<{serial:string,name:string,state:string,type:string}>}
+ */
+export function parseHdcTargets (stdout) {
+  const out = []
+  for (const rawLine of String(stdout || '').split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('[Empty]')) continue
+    const cols = line.split(/\s+/)
+    const serial = cols[0]
+    if (!serial || serial.startsWith('[')) continue
+    const state = (cols[1] || 'device').toLowerCase()
+    if (state === 'unauthorized' || state === 'offline' || state === 'unknown') continue
+    out.push({ serial, name: '', state: cols[1] || 'device', type: '' })
+  }
+  return out
+}
+
+/**
+ * Quote one value for the device shell (`sh` single-quote form). hdc joins
+ * argv into one command line on the device, so values containing spaces must
+ * be quoted here.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function quoteDeviceShellArg (value) {
+  const text = value === undefined || value === null ? '' : String(value)
+  return "'" + text.replace(/'/g, "'\\''") + "'"
+}
+
+/**
+ * Build argv for `hdc [-t s] shell hilog [-x] ...` (HiLog snapshot / follow).
+ *
+ * `devecocli log` translates to exactly this (`-L` level, `-e` keyword).
+ * Bundle filtering is NOT passed as `-P` here: the pid lookup is a separate
+ * remote call and the client already filters by pid, so a stale `-P` would
+ * silently starve the buffer.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.device] Target serial → `-t`
+ * @param {boolean} [opts.follow] true = live stream (no `-x`)
+ * @param {string} [opts.level] D|I|W|E|F → `-L`
+ * @param {string} [opts.keyword] grep expression → `-e`
+ * @returns {string[]}
+ */
+export function buildHdcHilogArgs (opts = {}) {
+  const args = []
+  if (opts.device) args.push('-t', String(opts.device))
+  args.push('shell', 'hilog')
+  if (opts.follow !== true) args.push('-x')
+  if (opts.level && /^[DIWEF]$/.test(opts.level)) args.push('-L', opts.level)
+  if (opts.keyword) args.push('-e', quoteDeviceShellArg(opts.keyword))
+  return args
+}
+
+/** Live `hdc ... shell hilog` stream (no `-x`). @returns {string[]} */
+export function buildHdcHilogFollowArgs (opts = {}) {
+  return buildHdcHilogArgs({ ...opts, follow: true })
+}
+
+/** `hdc ... shell uitest screenCap -p <devicePath>` (preferred screenshot). */
+export function buildHdcScreenCapArgs (devicePath) {
+  return ['shell', 'uitest', 'screenCap', '-p', String(devicePath)]
+}
+
+/** `hdc ... shell snapshot_display -f <devicePath>` (screenshot fallback). */
+export function buildHdcSnapshotDisplayArgs (devicePath) {
+  return ['shell', 'snapshot_display', '-f', String(devicePath)]
+}
+
+/** `hdc file recv <devicePath> <localPath>`. */
+export function buildHdcFileRecvArgs (devicePath, localPath) {
+  return ['file', 'recv', String(devicePath), String(localPath)]
+}
+
+/** `hdc ... shell rm -f <devicePath>` (best-effort cleanup). */
+export function buildHdcFileRemoveArgs (devicePath) {
+  return ['shell', 'rm', '-f', String(devicePath)]
+}
+
+/** `hdc ... shell uitest uiInput click <x> <y>`. */
+export function buildHdcTapArgs (opts = {}) {
+  return ['shell', 'uitest', 'uiInput', 'click', String(opts.x), String(opts.y)]
+}
+
+/** `hdc ... shell uitest uiInput swipe <x1> <y1> <x2> <y2> [speed]`. */
+export function buildHdcSwipeArgs (opts = {}) {
+  const args = ['shell', 'uitest', 'uiInput', 'swipe',
+    String(opts.x1), String(opts.y1), String(opts.x2), String(opts.y2)]
+  if (opts.speed !== undefined && opts.speed !== null && opts.speed !== '') {
+    args.push(String(opts.speed))
+  }
+  return args
+}
+
+/** `hdc ... shell uitest uiInput text '<text>'` (device shell quoted). */
+export function buildHdcTextArgs (opts = {}) {
+  return ['shell', 'uitest', 'uiInput', 'text', quoteDeviceShellArg(opts.text)]
+}
+
+/**
+ * `hdc ... shell hidumper -s WindowManagerService -a -a` — the window dump
+ * DevEco CLI itself parses for `ui window list`.
+ */
+export function buildHdcWindowListArgs () {
+  return ['shell', 'hidumper', '-s', 'WindowManagerService', '-a', '-a']
+}
+
+/**
+ * Parse the `hidumper -s WindowManagerService -a -a` table.
+ *
+ * DevEco CLI's parser (verified): find the `WindowName` header, then each row
+ * is `name displayId pid winId type`; stop at the blank line / dashes /
+ * `Focus window` / `total window`; `Focused` = the id after `Focus window:`.
+ *
+ * @param {string} stdout
+ * @returns {Array<{id:number,name:string,pid:number,displayId:number,type:number,focused:boolean}>}
+ */
+export function parseWindowManagerDump (stdout) {
+  const lines = String(stdout || '').split(/\r?\n/)
+  const start = lines.findIndex((l) => l.trimStart().startsWith('WindowName'))
+  if (start < 0) return []
+  const rows = []
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (!line || /^-+$/.test(line) || line.startsWith('Focus window') || line.startsWith('total window')) break
+    const cols = line.split(/\s+/)
+    if (cols.length < 5) continue
+    const displayId = Number(cols[1])
+    const pid = Number(cols[2])
+    const id = Number(cols[3])
+    const type = Number(cols[4])
+    if (![displayId, pid, id, type].every(Number.isFinite)) continue
+    rows.push({ id, name: cols[0], pid, displayId, type, focused: false })
+  }
+  const focusLine = lines.find((l) => l.trim().startsWith('Focus window'))
+  const focusId = focusLine ? Number(focusLine.replace(/.*:\s*/, '').trim()) : NaN
+  if (Number.isFinite(focusId)) {
+    for (const row of rows) row.focused = row.id === focusId
+  }
+  return rows
+}
+
+/**
+ * Device params used by the `deviceInfo` fallback (`hdc shell param get …`).
+ * Values are keyed by the `const.*` system parameter names DevEco CLI reads.
+ */
+export const HDC_DEVICE_PARAM_KEYS = Object.freeze([
+  'const.product.brand',
+  'const.product.model',
+  'const.product.devicetype',
+  'const.ohos.apiversion',
+  'const.build.characteristics',
+])
+
+/** `hdc ... shell param get <key>`. @returns {string[]} */
+export function buildHdcParamArgs (key) {
+  return ['shell', 'param', 'get', String(key)]
 }

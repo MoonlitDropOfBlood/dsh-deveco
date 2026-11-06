@@ -22,6 +22,7 @@ import { Service } from "@deepseek-ai/cordis";
 import { randomUUID, randomBytes } from "node:crypto";
 import net from "node:net";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -50,6 +51,21 @@ import {
   buildUiRawDumpArgs,
   buildUiRawRecvArgs,
   buildUiRawCleanArgs,
+  buildHdcListTargetsArgs,
+  parseHdcTargets,
+  buildHdcHilogArgs,
+  buildHdcHilogFollowArgs,
+  buildHdcScreenCapArgs,
+  buildHdcSnapshotDisplayArgs,
+  buildHdcFileRecvArgs,
+  buildHdcFileRemoveArgs,
+  buildHdcTapArgs,
+  buildHdcSwipeArgs,
+  buildHdcTextArgs,
+  buildHdcWindowListArgs,
+  parseWindowManagerDump,
+  buildHdcParamArgs,
+  HDC_DEVICE_PARAM_KEYS,
   buildArkForwardArgs,
   buildLocalAbstractForwardArgs,
   buildForwardRemoveArgs,
@@ -105,18 +121,28 @@ function dshHome() {
   return process.env.DSH_HOME || join(homedir(), ".dsh");
 }
 
-/** Owned wire object — converts a resolved toolchain record into JSON-safe form. */
-function toResolvedWire(resolved) {
+/** Owned wire object — converts a resolved toolchain record into JSON-safe form.
+ *
+ * `extra` carries runtime capability flags (`cliAvailable` / `hdcAvailable`)
+ * that are probed by the service, not by the pure resolver. They let the
+ * client show the honest degraded state instead of a healthy badge on a
+ * toolchain whose devecocli is missing.
+ */
+function toResolvedWire(resolved, extra) {
   if (!resolved) {
     return {
       source: "none",
       minVersionOk: false,
+      cliAvailable: false,
+      hdcAvailable: !!(extra && extra.hdcAvailable),
       message: "未配置工具链",
     };
   }
   const wire = {
     source: resolved.source || "none",
     minVersionOk: !!resolved.minVersionOk,
+    cliAvailable: typeof extra?.cliAvailable === "boolean" ? extra.cliAvailable : !!resolved.cliAvailable,
+    hdcAvailable: !!(extra && extra.hdcAvailable),
     message: typeof resolved.message === "string" ? resolved.message : "",
   };
   if (typeof resolved.exec === "string" && resolved.exec) wire.exec = resolved.exec;
@@ -545,25 +571,72 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     return this._resolved;
   }
 
-  /** True when the toolchain is unusable (no source or clt below min). */
-  _isToolchainBroken() {
-    if (!this._resolved) return true;
-    if (this._resolved.source === "none") return true;
-    return false;
+  /**
+   * Absolute path to a **usable** devecocli executable, or null.
+   *
+   * `devecocli` is a separate npm package (`@deveco/deveco-cli`); DevEco
+   * Studio and Command Line Tools do NOT bundle it. `resolveCli` fills `exec`
+   * only after probing the file, but the synthesized `<root>/bin/devecocli`
+   * shape is re-checked here too — a missing CLI must never turn into a
+   * spawn-ENOENT for every feature. null ⇒ hdc degradation path.
+   */
+  _cliExec() {
+    const r = this._resolved;
+    if (!r) return null;
+    const candidate = devecoExec(r);
+    if (!candidate) return null;
+    try {
+      return existsSync(candidate) ? candidate : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /** Runtime capability snapshot (wire + degradation decisions). */
+  _capabilities() {
+    return {
+      cliAvailable: !!this._cliExec(),
+      hdcAvailable: !!this._resolveHdcPath(),
+    };
+  }
+
+  /** Wire-shaped resolved record with the runtime capability flags attached. */
+  _resolvedWire() {
+    return toResolvedWire(this._resolved, this._capabilities());
+  }
+
+  /** Neither devecocli nor hdc is usable — every device/UI feature needs one. */
+  _toolchainError() {
+    const msg = (this._resolved && this._resolved.message) || "";
+    return err(
+      "no-toolchain",
+      "未找到可用的 devecocli 或 hdc。devecocli 是独立安装的命令行工具（npm i -g @deveco/deveco-cli），"
+      + "不随 DevEco Studio / Command Line Tools 一起安装；未安装时插件会降级到 SDK 自带的 hdc，"
+      + "请在设置 → HarmonyOS Suite 配置 DevEco Studio 或 Command Line Tools 路径。"
+      + (msg ? ` 当前状态：${msg}` : "")
+    );
+  }
+
+  /** `-t <serial>` prefix for hdc target scoping. */
+  _hdcTargetArgs(device) {
+    return device ? ["-t", String(device)] : [];
   }
 
   /**
-   * Run an exec via execCli, normalizing failures to the standard error
+   * Run one devecocli command, normalizing failures to the standard error
    * envelope. The success envelope wraps `{stdout, stderr, code}` exactly as
    * execCli returns it; callers shape it into their own payload.
+   *
+   * Callers that have an hdc fallback MUST check `_cliExec()` first — this
+   * method is the CLI-only branch.
    *
    * devecocli quirk: it prints `error: ...` yet still exits 0, so non-zero
    * exit alone can't detect failures — we also treat a leading `error:` line
    * in stdout/stderr as a failure.
    */
   async _execOrErr(args, opts) {
-    if (this._isToolchainBroken()) {
-      return err("no-toolchain", (this._resolved && this._resolved.message) || "未配置工具链");
+    if (!this._cliExec()) {
+      return err("no-cli", (this._resolved && this._resolved.message) || "未安装 devecocli");
     }
     try {
       const r = await execCli(this._resolved, args, opts || {});
@@ -645,7 +718,7 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     const c = this._getConfigSource() || { studioPath: "", cltPath: "" };
     return ok({
       config: toConfigWire(c),
-      resolved: toResolvedWire(this._resolved),
+      resolved: this._resolvedWire(),
       discovery: this._discovery ? toDiscoveryWire(this._discovery) : null,
     });
   }
@@ -664,7 +737,7 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       return err("persist-failed", (e && e.message) ? e.message : String(e));
     }
     this._reloadResolved();
-    return ok({ config: toConfigWire(this._config), resolved: toResolvedWire(this._resolved) });
+    return ok({ config: toConfigWire(this._config), resolved: this._resolvedWire() });
   }
 
   /**
@@ -681,7 +754,7 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       return err("persist-failed", (e && e.message) ? e.message : String(e));
     }
     this._reloadResolved();
-    return ok({ config: toConfigWire(this._config), resolved: toResolvedWire(this._resolved) });
+    return ok({ config: toConfigWire(this._config), resolved: this._resolvedWire() });
   }
 
   async rescan() {
@@ -723,28 +796,73 @@ export class HarmonyDevEcoService extends TypertRemoteService {
   // ---- device commands -----------------------------------------------------
 
   async deviceList() {
-    const r = await this._execOrErr(["device", "list", "--format", "json"], { timeout: 15000 });
-    if (r.ok === false) return r;
-    let devices = [];
-    try {
-      devices = parseDeviceList(r.value && r.value.stdout);
-    } catch (_) {
-      // Parser failure is non-fatal — return an empty list, not an error.
-      devices = [];
+    // devecocli is preferred when installed (richer rows: name / deviceType);
+    // without it, enumerate the SDK's hdc targets. This is the difference
+    // between an empty device dropdown ("plugin unusable") and a working UI.
+    if (this._cliExec()) {
+      const r = await this._execOrErr(["device", "list", "--format", "json"], { timeout: 15000 });
+      if (r.ok === false) return r;
+      let devices = [];
+      try {
+        devices = parseDeviceList(r.value && r.value.stdout);
+      } catch (_) {
+        // Parser failure is non-fatal — return an empty list, not an error.
+        devices = [];
+      }
+      return ok({ devices });
     }
-    return ok({ devices });
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return this._toolchainError();
+    const out = await this._hdcRun(buildHdcListTargetsArgs(), 10000);
+    const text = `${out.stdout || ""}\n${out.stderr || ""}`;
+    if (!out.ok) {
+      return err(
+        (out.error && out.error.code) || "hdc-failed",
+        (out.error && out.error.message) || text.trim() || "hdc list targets 失败"
+      );
+    }
+    // hdc exits 0 on failure — `[Fail]…` is the only reliable marker.
+    const fail = /\[Fail\]\s*([^\r\n]*)/i.exec(text);
+    if (fail) return err("hdc-failed", (fail[1] || "").trim() || "hdc list targets 失败");
+    return ok({ devices: parseHdcTargets(out.stdout || text) });
   }
 
   async deviceInfo(request) {
     const device = (request && typeof request.device === "string") ? request.device : "";
     if (!device) return err("invalid-request", "device required");
-    const r = await this._execOrErr(["device", "view", "-t", device], { timeout: 15000 });
-    if (r.ok === false) return r;
-    // devecocli device view prints key/value pairs; the client just gets the
-    // raw text plus the parsed stdout/stderr/code so it can render whatever.
-    const stdout = (r.value && r.value.stdout) || "";
-    const stderr = (r.value && r.value.stderr) || "";
-    return ok({ info: { serial: device, stdout, stderr, code: r.value ? r.value.code : 0 } });
+    if (this._cliExec()) {
+      const r = await this._execOrErr(["device", "view", "-t", device], { timeout: 15000 });
+      if (r.ok === false) return r;
+      // devecocli device view prints key/value pairs; the client just gets the
+      // raw text plus the parsed stdout/stderr/code so it can render whatever.
+      const stdout = (r.value && r.value.stdout) || "";
+      const stderr = (r.value && r.value.stderr) || "";
+      return ok({ info: { serial: device, stdout, stderr, code: r.value ? r.value.code : 0 } });
+    }
+    // hdc fallback: read the same `const.*` system parameters DevEco CLI reads.
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return this._toolchainError();
+    const lines = [];
+    for (const key of HDC_DEVICE_PARAM_KEYS) {
+      const out = await this._hdcRun(
+        [...this._hdcTargetArgs(device), ...buildHdcParamArgs(key)],
+        8000
+      );
+      // A broken target (no device / unauthorized) must be reported once,
+      // not rendered as five "(读取失败)" rows.
+      const text = `${out.stdout || ""}\n${out.stderr || ""}`;
+      if (!out.ok || text.includes("[Fail]")) {
+        if (lines.length === 0) {
+          return err(
+            (out.error && out.error.code) || "hdc-failed",
+            (out.error && out.error.message) || text.trim() || `读取设备 ${device} 信息失败`
+          );
+        }
+      }
+      const value = out.ok ? String(out.stdout || "").trim() : "";
+      lines.push(`${key}: ${value || "（读取失败）"}`);
+    }
+    return ok({ info: { serial: device, stdout: lines.join("\n"), stderr: "", code: 0 } });
   }
 
   // ---- IP 网络连接（hdc tconn） ---------------------------------------------
@@ -754,6 +872,14 @@ export class HarmonyDevEcoService extends TypertRemoteService {
 
   _resolveHdcPath() {
     const extraRoots = [];
+    // Configured paths come FIRST: when devecocli is on PATH the resolver sets
+    // source='devecocli' and drops `path`, so a custom Studio/CLT install
+    // (e.g. D:\Application\Huawei\DevEco Studio) would otherwise never be
+    // probed for its SDK-bundled hdc — breaking the DevEco tree / dump / IP
+    // connect fallbacks even though the user configured the path.
+    const cfg = this._getConfigSource() || {};
+    if (typeof cfg.studioPath === "string" && cfg.studioPath) extraRoots.push(cfg.studioPath);
+    if (typeof cfg.cltPath === "string" && cfg.cltPath) extraRoots.push(cfg.cltPath);
     const disc = this._discovery;
     if (disc && Array.isArray(disc.studios)) {
       for (const s of disc.studios) {
@@ -882,22 +1008,10 @@ export class HarmonyDevEcoService extends TypertRemoteService {
 
   // ---- HiLog ---------------------------------------------------------------
 
-  async hilogList(request) {
-    const opts = {
-      device: request && request.device,
-      level: request && request.level,
-      bundle: request && request.bundle,
-      keyword: request && request.keyword,
-      tail: request && request.tail,
-      from: request && request.from,
-      to: request && request.to,
-    };
-    const args = buildHilogArgs(opts);
-    const r = await this._execOrErr(args, { timeout: 30000 });
-    if (r.ok === false) return r;
+  /** Normalize raw HiLog text into wire lines (parsed records or `{raw}`). */
+  _parseHilogText(text) {
     const lines = [];
-    const raw = (r.value && r.value.stdout) || "";
-    for (const line of raw.split(/\r?\n/)) {
+    for (const line of String(text || "").split(/\r?\n/)) {
       if (!line || !line.trim()) continue;
       const parsed = parseHilogLine(line);
       if (parsed) {
@@ -916,15 +1030,59 @@ export class HarmonyDevEcoService extends TypertRemoteService {
         lines.push({ raw: line.trim() });
       }
     }
+    return lines;
+  }
+
+  async hilogList(request) {
+    const level = request && request.level;
+    if (this._cliExec()) {
+      const opts = {
+        device: request && request.device,
+        level,
+        bundle: request && request.bundle,
+        keyword: request && request.keyword,
+        tail: request && request.tail,
+        from: request && request.from,
+        to: request && request.to,
+      };
+      const r = await this._execOrErr(buildHilogArgs(opts), { timeout: 30000 });
+      if (r.ok === false) return r;
+      return ok({ lines: this._parseHilogText((r.value && r.value.stdout) || "") });
+    }
+    // hdc fallback: `hilog -x` dumps the buffer and exits — the same snapshot
+    // command DevEco CLI uses. `--tail` / `--from` / `--to` are devecocli-only
+    // conveniences; tail is applied host-side and the others are ignored.
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return this._toolchainError();
+    const out = await this._hdcRun(
+      buildHdcHilogArgs({
+        device: request && request.device,
+        level: typeof level === "string" && /^[DIWEF]$/.test(level) ? level : undefined,
+        keyword: request && request.keyword,
+      }),
+      30000
+    );
+    if (!out.ok) {
+      return err((out.error && out.error.code) || "hdc-failed", (out.error && out.error.message) || "读取 hilog 失败");
+    }
+    const text = `${out.stdout || ""}\n${out.stderr || ""}`;
+    if (/\[Fail\]/i.test(text)) return err("hdc-failed", text.trim());
+    let lines = this._parseHilogText(out.stdout || "");
+    const tail = request && Number.isFinite(Number(request.tail))
+      ? Math.max(1, Math.floor(Number(request.tail)))
+      : 500;
+    if (lines.length > tail) lines = lines.slice(lines.length - tail);
     return ok({ lines });
   }
 
   async hilogStreamStart(request) {
-    if (this._isToolchainBroken()) {
-      return err("no-toolchain", (this._resolved && this._resolved.message) || "未配置工具链");
-    }
-    const cmd = devecoExec(this._resolved);
-    if (!cmd) return err("no-toolchain", "no usable devecocli executable");
+    // Prefer devecocli (richer formatting) but degrade to `hdc shell hilog`
+    // when the separate CLI is not installed. The client already filters
+    // keyword / bundle / level in the view, so the hdc stream only needs the
+    // device target — no filter snapshot that could starve the buffer.
+    const cli = this._cliExec();
+    const hdc = cli ? null : this._resolveHdcPath();
+    if (!cli && !hdc) return this._toolchainError();
 
     const opts = {
       device: request && request.device,
@@ -932,13 +1090,18 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       bundle: request && request.bundle,
       keyword: request && request.keyword,
     };
-    const argv = buildHilogFollowArgs(opts);
+    const cmd = cli || hdc;
+    const argv = cli ? buildHilogFollowArgs(opts) : buildHdcHilogFollowArgs({ device: opts.device });
+    const useShell = !!cli && process.platform === "win32";
 
     const streamId = randomUUID();
     let child;
     try {
-      child = spawn(cmd, argv, {
-        shell: process.platform === "win32",
+      // cmd.exe cannot resolve an unquoted executable path containing spaces
+      // (e.g. "…\DevEco Studio\…") — quote a shell-launched .cmd shim.
+      const file = useShell ? `"${cmd}"` : cmd;
+      child = spawn(file, argv, {
+        shell: useShell,
         windowsHide: true,
         env: process.env,
       });
@@ -946,40 +1109,45 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       return err("cli-failed", "spawn failed: " + (e && e.message ? e.message : String(e)));
     }
 
-    const stream = { child, buffer: [], closed: false };
+    const stream = { child, buffer: [], closed: false, source: cli ? "devecocli" : "hdc", parsedLines: 0 };
     this._streams.set(streamId, stream);
+
+    // Keep a small raw tail of both pipes so a connect failure (`[Fail]…`,
+    // exit 0) can be surfaced after close — otherwise the UI waits forever on
+    // "等待日志…" for a stream that never produced a single log line.
+    let rawTail = "";
+    const rememberRaw = (text) => {
+      if (rawTail.length < 4000) rawTail += text;
+    };
 
     child.stdout.on("data", (d) => {
       const text = d.toString("utf8");
-      for (const line of text.split(/\r?\n/)) {
-        if (!line || !line.trim()) continue;
-        const parsed = parseHilogLine(line);
-        if (parsed) {
-          stream.buffer.push({
-            timestamp: parsed.timestamp,
-            pid: parsed.pid,
-            tid: parsed.tid,
-            level: parsed.level,
-            domain: parsed.domain,
-            tag: parsed.tag,
-            message: parsed.message,
-          });
-        } else {
-          stream.buffer.push({ raw: line.trim() });
+      rememberRaw(text);
+      // `[Fail]…` is an hdc connect error, not a log line — keep it out of the
+      // buffer (it is surfaced through `stream.error` on close instead).
+      const parsed = this._parseHilogText(text)
+        .filter((l) => !(l && typeof l.raw === "string" && l.raw.startsWith("[Fail]")));
+      if (parsed.length) {
+        stream.parsedLines += parsed.filter((l) => l.level).length;
+        stream.buffer.push(...parsed);
+        // Bound the buffer to 5000 entries so an unattended stream cannot grow
+        // unbounded and OOM the Host process.
+        if (stream.buffer.length > 5000) {
+          stream.buffer.splice(0, stream.buffer.length - 5000);
         }
-      }
-      // Bound the buffer to 5000 entries so an unattended stream cannot grow
-      // unbounded and OOM the Host process.
-      if (stream.buffer.length > 5000) {
-        stream.buffer.splice(0, stream.buffer.length - 5000);
       }
     });
 
-    // Swallow stderr — `hilog` occasionally emits progress notifications.
-    child.stderr.on("data", () => { /* */ });
+    // `hilog` occasionally emits progress notifications on stderr; keep the
+    // raw tail only (no UI output).
+    child.stderr.on("data", (d) => { rememberRaw(d.toString("utf8")); });
 
     child.on("close", () => {
       stream.closed = true;
+      if (!stream.error && stream.parsedLines === 0) {
+        const fail = /\[Fail\][^\r\n]*/i.exec(rawTail);
+        stream.error = fail ? fail[0].trim() : (rawTail.trim() || `${cli ? "devecocli log" : "hdc shell hilog"} 未产出日志`);
+      }
     });
     child.on("error", (e) => {
       stream.closed = true;
@@ -1064,6 +1232,16 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     const device = request && typeof request.device === "string" && request.device ? request.device : undefined;
     let nodes = await this._dumpUiViaHdc(device);
     if (!nodes) {
+      // No devecocli → there is no second tree source: report the failure
+      // honestly instead of pretending the toolchain is missing.
+      if (!this._cliExec()) {
+        if (!this._resolveHdcPath()) return this._toolchainError();
+        return err(
+          "dump-failed",
+          "uitest dumpLayout 未返回布局（设备未连接 / 当前无 UI / 目标应用不可见）；"
+          + "未安装 devecocli，无法回退到 devecocli ui layout。"
+        );
+      }
       // Fallback: the devecocli dump (no origBounds, but it still works).
       const opts = {
         device: request && request.device,
@@ -1103,22 +1281,53 @@ export class HarmonyDevEcoService extends TypertRemoteService {
    * --window <id>` and a layout node's `WindowScene` (`session<id>`) use.
    */
   async uiWindowList(request) {
-    const opts = {
-      device: request && request.device,
-      // System windows (status bar, gesture bar) are excluded by default, which
-      // is what an inspector wants; the client can opt into `--all`.
-      all: request ? request.all === true : false,
-    };
-    const args = buildUiWindowListArgs(opts);
-    const r = await this._execOrErr(args, { timeout: 15000 });
-    if (r.ok === false) return r;
-    let windows = [];
-    try {
-      windows = parseUiWindowListJson((r.value && r.value.stdout) || "");
-    } catch (_) {
-      windows = [];
+    const all = request ? request.all === true : false;
+    if (this._cliExec()) {
+      const opts = {
+        device: request && request.device,
+        // System windows (status bar, gesture bar) are excluded by default, which
+        // is what an inspector wants; the client can opt into `--all`.
+        all,
+      };
+      const args = buildUiWindowListArgs(opts);
+      const r = await this._execOrErr(args, { timeout: 15000 });
+      if (r.ok === false) return r;
+      let windows = [];
+      try {
+        windows = parseUiWindowListJson((r.value && r.value.stdout) || "");
+      } catch (_) {
+        windows = [];
+      }
+      return ok({ windows });
     }
-    return ok({ windows });
+    // hdc fallback: `hidumper -s WindowManagerService -a -a`, the same dump
+    // DevEco CLI parses for `ui window list`. Without this the Inspector's
+    // window dropdown stays empty and the client (which filters nodes by the
+    // selected window id) renders an empty tree even when the dump succeeded.
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return this._toolchainError();
+    const out = await this._hdcRun(
+      [...this._hdcTargetArgs(request && request.device), ...buildHdcWindowListArgs()],
+      15000
+    );
+    if (!out.ok) {
+      return err((out.error && out.error.code) || "hdc-failed", (out.error && out.error.message) || "读取窗口列表失败");
+    }
+    const text = `${out.stdout || ""}\n${out.stderr || ""}`;
+    if (/\[Fail\]/i.test(text)) return err("hdc-failed", text.trim() || "读取窗口列表失败");
+    let windows = parseWindowManagerDump(out.stdout || "");
+    // `type` is a local parse field (1 = app window); the wire schema has no
+    // type, so drop it after the app-window filter.
+    if (!all) windows = windows.filter((w) => w.type === 1);
+    return ok({
+      windows: windows.map((w) => ({
+        id: w.id,
+        name: w.name,
+        pid: w.pid,
+        displayId: w.displayId,
+        focused: w.focused,
+      })),
+    });
   }
 
   /**
@@ -1208,49 +1417,93 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     return ok({ nodes: r.value.nodes, source: r.value.source });
   }
 
+  /**
+   * Read a captured screenshot back into the wire shape. The client renders
+   * the inline data URL and needs the pixel size for overlay scaling; the file
+   * is size-capped so a huge screen cannot blow up the Remote payload.
+   */
+  async _screenshotWire(absPath, stdout, stderr) {
+    const MAX_INLINE_BYTES = 4 * 1024 * 1024;
+    let dataUrl = "";
+    let imageWidth = 0;
+    let imageHeight = 0;
+    let byteSize = 0;
+    try {
+      const buf = await readFile(absPath);
+      byteSize = buf.length;
+      if (byteSize <= MAX_INLINE_BYTES) {
+        const mime = (buf[0] === 0xFF && buf[1] === 0xD8) ? "image/jpeg" : "image/png";
+        dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+        const size = readPngSize(buf);
+        if (size) {
+          imageWidth = size.width;
+          imageHeight = size.height;
+        }
+      }
+    } catch (_) {
+      // Screenshot file missing/unreadable — still report savedTo; the client
+      // falls back to the path hint.
+    }
+    return ok({ savedTo: absPath, stdout: stdout || "", stderr: stderr || "", dataUrl, imageWidth, imageHeight, byteSize });
+  }
+
   async uiScreenshot(request) {
     const outPath = (request && typeof request.outPath === "string") ? request.outPath : "";
     if (!outPath) return err("invalid-request", "outPath required");
-    if (this._isToolchainBroken()) {
-      return err("no-toolchain", (this._resolved && this._resolved.message) || "未配置工具链");
-    }
     // Expand a leading `~/` (the client composes `~/.dsh/...`) and make sure the
-    // parent directory exists — devecocli writes the PNG straight to this path
-    // and will not create intermediate directories.
-    let absPath = outPath.replace(/^~(?=[/\\])/, homedir());
+    // parent directory exists — both devecocli and `hdc file recv` write to
+    // this exact path and will not create intermediate directories.
+    let absPath = outPath;
+    if (absPath.startsWith("~/")) absPath = join(homedir(), absPath.slice(2));
     try {
       await mkdir(dirname(absPath), { recursive: true });
     } catch (_) { /* best effort */ }
-    const argv = buildUiScreenshotArgs({ device: request && request.device, path: absPath });
-    try {
-      const r = await execCli(this._resolved, argv, { timeout: 30000 });
-      // Read the captured PNG back so the client can render it inline (and know
-      // its pixel size for overlay scaling / click→device coordinate mapping).
-      // Size-capped so a huge screen shot cannot blow up the Remote payload.
-      const MAX_INLINE_BYTES = 4 * 1024 * 1024;
-      let dataUrl = "";
-      let imageWidth = 0;
-      let imageHeight = 0;
-      let byteSize = 0;
+
+    if (this._cliExec()) {
+      const argv = buildUiScreenshotArgs({ device: request && request.device, path: absPath });
       try {
-        const buf = await readFile(absPath);
-        byteSize = buf.length;
-        if (byteSize <= MAX_INLINE_BYTES) {
-          dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
-          const size = readPngSize(buf);
-          if (size) {
-            imageWidth = size.width;
-            imageHeight = size.height;
-          }
-        }
-      } catch (_) {
-        // Screenshot file missing/unreadable — still report savedTo; the client
-        // falls back to the path hint.
+        const r = await execCli(this._resolved, argv, { timeout: 30000 });
+        return this._screenshotWire(absPath, r.stdout, r.stderr);
+      } catch (e) {
+        return err("cli-failed", (e && e.message) ? e.message : String(e));
       }
-      return ok({ savedTo: absPath, stdout: r.stdout || "", stderr: r.stderr || "", dataUrl, imageWidth, imageHeight, byteSize });
-    } catch (e) {
-      return err("cli-failed", (e && e.message) ? e.message : String(e));
     }
+
+    // hdc fallback: `uitest screenCap` first, then `snapshot_display` — the
+    // exact pair DevEco CLI tries — pulled back with `hdc file recv`.
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return this._toolchainError();
+    const devicePath = `/data/local/tmp/dsh-deveco-shot-${randomUUID()}.png`;
+    const targs = this._hdcTargetArgs(request && request.device);
+    let notes = "";
+    try {
+      for (const capture of [buildHdcScreenCapArgs, buildHdcSnapshotDisplayArgs]) {
+        const cap = await this._hdcRun([...targs, ...capture(devicePath)], 20000);
+        const capText = `${cap.stdout || ""}${cap.stderr || ""}`;
+        notes += capText;
+        // Per-attempt check: `[Fail]` from the first command must not poison
+        // the second attempt.
+        if (!cap.ok || capText.includes("[Fail]")) continue;
+        const recv = await this._hdcRun([...targs, ...buildHdcFileRecvArgs(devicePath, absPath)], 30000);
+        const recvText = `${recv.stdout || ""}${recv.stderr || ""}`;
+        notes += recvText;
+        if (recv.ok && !recvText.includes("[Fail]")) return this._screenshotWire(absPath, notes, "");
+      }
+      return err("screenshot-failed", notes.trim() || "设备截图失败（uitest screenCap / snapshot_display 均不可用）");
+    } finally {
+      await this._hdcRun([...targs, ...buildHdcFileRemoveArgs(devicePath)], 8000);
+    }
+  }
+
+  /** Run one hdc UI action, normalizing `[Fail]`-with-exit-0 into an error. */
+  async _hdcActionOk(argv, timeout, label) {
+    const out = await this._hdcRun(argv, timeout);
+    if (!out.ok) {
+      return err((out.error && out.error.code) || "hdc-failed", (out.error && out.error.message) || `${label} 失败`);
+    }
+    const text = `${out.stdout || ""}\n${out.stderr || ""}`;
+    if (text.includes("[Fail]")) return err("hdc-failed", text.trim() || `${label} 失败`);
+    return ok({ stdout: out.stdout || "", stderr: out.stderr || "", code: 0 });
   }
 
   async uiTap(request) {
@@ -1259,9 +1512,18 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       return err("invalid-request", "x, y must be finite numbers");
     }
-    return this._execOrErr(
-      buildUiTapArgs({ device: request && request.device, x, y }),
-      { timeout: 10000 }
+    if (this._cliExec()) {
+      return this._execOrErr(
+        buildUiTapArgs({ device: request && request.device, x, y }),
+        { timeout: 10000 }
+      );
+    }
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return this._toolchainError();
+    return this._hdcActionOk(
+      [...this._hdcTargetArgs(request && request.device), ...buildHdcTapArgs({ x, y })],
+      10000,
+      "tap"
     );
   }
 
@@ -1273,20 +1535,39 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     if (![x1, y1, x2, y2].every(Number.isFinite)) {
       return err("invalid-request", "x1, y1, x2, y2 must be finite numbers");
     }
-    const argv = buildUiSwipeArgs({
-      device: request && request.device,
-      x1, y1, x2, y2,
-      speed: request && request.speed,
-    });
-    return this._execOrErr(argv, { timeout: 15000 });
+    if (this._cliExec()) {
+      const argv = buildUiSwipeArgs({
+        device: request && request.device,
+        x1, y1, x2, y2,
+        speed: request && request.speed,
+      });
+      return this._execOrErr(argv, { timeout: 15000 });
+    }
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return this._toolchainError();
+    return this._hdcActionOk(
+      [...this._hdcTargetArgs(request && request.device),
+        ...buildHdcSwipeArgs({ x1, y1, x2, y2, speed: request && request.speed })],
+      15000,
+      "swipe"
+    );
   }
 
   async uiText(request) {
     const text = (request && typeof request.text === "string") ? request.text : "";
     if (!text) return err("invalid-request", "text required");
-    return this._execOrErr(
-      buildUiTextArgs({ device: request && request.device, text }),
-      { timeout: 10000 }
+    if (this._cliExec()) {
+      return this._execOrErr(
+        buildUiTextArgs({ device: request && request.device, text }),
+        { timeout: 10000 }
+      );
+    }
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return this._toolchainError();
+    return this._hdcActionOk(
+      [...this._hdcTargetArgs(request && request.device), ...buildHdcTextArgs({ text })],
+      10000,
+      "text"
     );
   }
 

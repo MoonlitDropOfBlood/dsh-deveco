@@ -109,6 +109,33 @@ function envHome(...parts) {
   return join(home, ...parts)
 }
 
+/**
+ * 在 Studio / CLT 安装根下探测随附的 devecocli。
+ *
+ * **devecocli 是独立的 npm 包（@deveco/deveco-cli），并不随 DevEco Studio
+ * 或 Command Line Tools 安装**。这里只是兜底：用户若自行把 CLI 放进
+ * `<root>/bin/`（某些企业镜像/旧安装器会这么做），就当作可用；找不到时
+ * 返回空串，调用方据此进入 hdc 降级，绝不能凭空拼一个不存在的路径当成功。
+ *
+ * @param {string} root 安装根（Studio 根或某个 CLT 版本根）
+ * @returns {string} 存在的可执行路径，或 ''
+ */
+function findCliInRoot(root) {
+  if (!root) return ''
+  const cleaned = String(root).replace(/[\\/]+$/, '')
+  const sep = IS_WIN ? '\\' : '/'
+  const names = IS_WIN ? ['devecocli.cmd', 'devecocli.exe', 'devecocli'] : ['devecocli']
+  for (const name of names) {
+    const candidate = `${cleaned}${sep}bin${sep}${name}`
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      // keep probing
+    }
+  }
+  return ''
+}
+
 function envLocalAppData(...parts) {
   const lad = process.env.LOCALAPPDATA || ''
   if (!lad) return null
@@ -335,6 +362,7 @@ export function scanCltCandidates(platform, cltRoot) {
  *   path?: string,
  *   version?: number[],
  *   minVersionOk: boolean,
+ *   cliAvailable: boolean,
  *   message: string,
  * }}
  */
@@ -361,6 +389,7 @@ export function resolveCli(opts = {}) {
         source: 'devecocli',
         exec: overrideExec,
         minVersionOk: true,
+        cliAvailable: true,
         message: '使用 overrideExec 指定的 devecocli',
       }
     }
@@ -372,6 +401,7 @@ export function resolveCli(opts = {}) {
         source: 'devecocli',
         exec: found,
         minVersionOk: true,
+        cliAvailable: true,
         message: `在 PATH 中找到 devecocli: ${found}`,
       }
     }
@@ -384,13 +414,17 @@ export function resolveCli(opts = {}) {
         const v = chosen.version
         const ok = compareVersions(v, MIN_CLT_VERSION) >= 0
         const verStr = `${v[0]}.${v[1]}.${v[2]}`
+        const cliExec = findCliInRoot(chosen.path)
         return {
           source: 'clt',
           path: chosen.path,
           version: v,
           minVersionOk: ok,
+          cliAvailable: !!cliExec,
+          ...(cliExec ? { exec: cliExec } : {}),
           message: ok
             ? `使用 Command Line Tools ${verStr}`
+              + (cliExec ? '' : '（未检测到 devecocli：设备列表 / 日志 / 截图 / 操作将降级为 hdc）')
             : `Command Line Tools 版本 ${verStr} 低于最低要求 ${MIN_CLT_VERSION.join('.')}，请升级到 26.0.0 或更新`,
         }
       }
@@ -400,11 +434,16 @@ export function resolveCli(opts = {}) {
     // 4. studioPath 兜底
     const cleanStudio = normalizeStudioPath(studioPath)
     if (cleanStudio) {
+      const cliExec = findCliInRoot(cleanStudio)
       return {
         source: 'studio',
         path: cleanStudio,
         minVersionOk: true,
-        message: '使用 DevEco Studio 内置工具',
+        cliAvailable: !!cliExec,
+        ...(cliExec ? { exec: cliExec } : {}),
+        message: cliExec
+          ? '使用 DevEco Studio 工具链'
+          : '使用 DevEco Studio 自带的 SDK / hdc（未检测到 devecocli：设备列表 / 日志 / 截图 / 操作将降级为 hdc）',
       }
     }
 
@@ -412,7 +451,8 @@ export function resolveCli(opts = {}) {
     return {
       source: 'none',
       minVersionOk: false,
-      message: '未配置 DevEco Studio 或 Command Line Tools 路径；请在设置中填写，或将 devecocli 加入 PATH',
+      cliAvailable: false,
+      message: '未找到 devecocli，也未配置 DevEco Studio 或 Command Line Tools 路径；请在设置中填写，或将 devecocli 加入 PATH',
     }
   } finally {
     // 恢复 env，避免污染调用方

@@ -147,7 +147,7 @@ async function attachSession (host, args) {
   if (bundle && (args.launch === true || pid === 0)) {
     const info = await debugSignature(host, device, bundle)
     if (info.debuggable === false) {
-      throw fail(`应用 ${bundle} 不是调试签名（appProvisionType=${info.provisionType || '未知'}）：ArkTS 调试器只接受 debug 签名应用。请用 debug 模式重新构建安装（devecocli build/run 或 DevEco 调试运行）。`)
+      throw fail(`应用 ${bundle} 不是调试签名（appProvisionType=${info.provisionType || '未知'}）：ArkTS 调试器只接受 debug 签名应用。请用 debug 模式重新构建安装（DevEco 调试运行；装了 DevEco CLI 时也可 devecocli build/run）。`)
     }
     const ability = (typeof args.ability === 'string' && args.ability.trim())
       || info.mainAbility
@@ -173,7 +173,7 @@ async function attachSession (host, args) {
     bundleName = bundle
   } else if (bundle && pid === 0) {
     const pids = await runningPids(host, device, bundle)
-    if (pids.length === 0) throw fail(`包 ${bundle} 未运行：用 launch=true（会 aa appdebug + 启动），或先用 devecocli device app start 启动它。`)
+    if (pids.length === 0) throw fail(`包 ${bundle} 未运行：用 launch=true（会 aa appdebug + 启动），或先启动它（devecocli device app start / hdc shell aa start）。`)
     pid = pids[0]
     bundleName = bundle
   }
@@ -266,7 +266,7 @@ function buildHarmonyDebugTool (defineTool, host) {
       'Debug a running ArkTS app on a HarmonyOS device with the ArkVM remote debugger — the channel DevEco Studio itself uses (hdc fport ark:<pid>@Debugger + a CDP-style JSON-RPC session).',
       'Actions: attach (with launch=true it performs the verified wait-for-debugger flow: aa appdebug -b → aa force-stop → aa start -D → fport → handshake; without launch it attaches to a running pid), status/scripts (loaded script URLs to set breakpoints on), set_breakpoint/remove_breakpoint/breakpoints, pause/resume, step (over/into/out), stack (frames of the last Debugger.paused), evaluate (Debugger.evaluateOnCallFrame — Runtime.evaluate is unsupported by this runtime and the call must happen while paused), properties (Runtime.getProperties on a scope/object id), exceptions (setPauseOnExceptions none|uncaught|all), events (recent protocol events), detach.',
       'Breakpoint URLs must equal the scriptParsed.url exactly (e.g. entry|hrouter|2.0.0|src/main/ets/...); lines are 0-based. Errors are returned inside result.code/message by the runtime, so a successful call means no code member. Only one debugger client per pid is allowed: an IDE debug session blocks attach, and attaching to an app that was not started with wait-for-debugger often yields an empty session (no scriptParsed/paused) — the tool reports that explicitly instead of pretending the session works.',
-      'This tool is only for the ArkTS runtime debugger. Device logs are available through devecocli log (--level/--keyword/--bundle-name/--tail/--format json) and app management through devecocli device app (list/info/start/stop/install/uninstall); the UI tree is available through the harmony_ui_tree tool.',
+      'This tool is only for the ArkTS runtime debugger. Device logs: devecocli log (--level/--keyword/--bundle-name/--tail/--format json) when DevEco CLI is installed, otherwise hdc shell hilog. App management: devecocli device app (list/info/start/stop/install/uninstall) or hdc/bm/aa shell commands. The UI tree is available through the harmony_ui_tree tool.',
     ].join(' '),
     parameters: {
       action: { type: 'string', enum: DEBUG_ACTIONS, required: true, description: 'Debugger operation.' },

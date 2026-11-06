@@ -688,6 +688,11 @@ window.__ModuleLoader__.load({
     function useDeviceList() {
       const [devices, setDevices] = React.useState([]);
       const [device, setDevice] = React.useState("");
+      // Device enumeration can fail for two very different reasons: no
+      // devecocli AND no hdc (nothing works), or a transient device/hdc
+      // error. Before, this was swallowed silently and the dropdown just
+      // stayed empty ("the plugin is unusable" report).
+      const [deviceError, setDeviceError] = React.useState("");
       const refresh = React.useCallback(async () => {
         if (!remote) return;
         try {
@@ -695,15 +700,20 @@ window.__ModuleLoader__.load({
           const out = unwrap(r);
           if (out.ok && out.value && Array.isArray(out.value.devices)) {
             setDevices(out.value.devices);
+            setDeviceError("");
             setDevice((prev) => {
               if (prev && out.value.devices.some((d) => d.serial === prev)) return prev;
               return out.value.devices.length > 0 ? (out.value.devices[0].serial || "") : "";
             });
+          } else {
+            setDeviceError((out.error && (out.error.message || out.error.code)) || "获取设备列表失败");
           }
-        } catch (e) { /* */ }
+        } catch (e) {
+          setDeviceError(e instanceof Error ? e.message : String(e));
+        }
       }, []);
       React.useEffect(() => { refresh(); }, [refresh]);
-      return { devices, device, setDevice, refresh };
+      return { devices, device, setDevice, refresh, deviceError };
     }
 
     /**
@@ -717,6 +727,17 @@ window.__ModuleLoader__.load({
       if (!resolved) return { cls: "harm-badge-muted", label: "检测中…", title: "正在读取工具链状态" };
       const v = typeof resolved.version === "string" ? resolved.version
         : Array.isArray(resolved.version) ? resolved.version.join(".") : "";
+      // Runtime capability flags are the honest view: `source: 'studio'`
+      // alone does NOT mean devecocli is installed (it is a separate npm
+      // package). When it is missing but hdc was found, the plugin still
+      // works through the hdc fallback — say so instead of showing a healthy
+      // toolchain badge.
+      if (resolved.cliAvailable === false && resolved.hdcAvailable === true) {
+        return { cls: "harm-badge-info", label: "hdc 降级（未安装 devecocli）", title: resolved.message };
+      }
+      if (resolved.cliAvailable === false && resolved.hdcAvailable === false) {
+        return { cls: "harm-badge-err", label: "未找到 devecocli / hdc", title: resolved.message };
+      }
       if (resolved.source === "devecocli") {
         return { cls: "harm-badge-ok", label: "devecocli（PATH）", title: resolved.message };
       }
@@ -750,7 +771,7 @@ window.__ModuleLoader__.load({
     }
 
     function DevicePicker(props) {
-      const { devices, device, setDevice, refresh, busy } = props;
+      const { devices, device, setDevice, refresh, busy, error } = props;
       return React.createElement(
         React.Fragment, null,
         React.createElement(
@@ -760,19 +781,25 @@ window.__ModuleLoader__.load({
             style: { minWidth: 0, maxWidth: 220, flex: "0 1 auto" },
             value: device,
             onChange: (e) => setDevice(e.target.value),
+            title: error || undefined,
           },
-          React.createElement("option", { value: "" }, "未选择"),
+          React.createElement("option", { value: "" }, error ? "设备列表不可用" : "未选择"),
           devices.map((d, i) =>
             React.createElement("option", { key: i, value: d.serial }, d.name || d.serial),
           ),
         ),
         React.createElement("button", { className: "harm-btn", disabled: !!busy, onClick: refresh }, "刷新设备"),
+        error ? React.createElement("span", { className: "harm-cardError", style: { flexBasis: "100%" } }, "设备列表获取失败：" + error) : null,
+        !error && devices.length === 0
+          ? React.createElement("span", { className: "harm-fieldHint", style: { flexBasis: "100%" } },
+              "未发现设备：连接 USB / 启动模拟器后点「刷新设备」，或在设置 → HarmonyOS Suite 中用 IP 连接。")
+          : null,
       );
     }
 
     // ---- HiLog 检查器 tab（独立入口）--------------------------------------
     function HarmonyHiLogTab(props) {
-      const { devices, device, setDevice, refresh: refreshDevices } = useDeviceList();
+      const { devices, device, setDevice, refresh: refreshDevices, deviceError } = useDeviceList();
       const badge = useToolchainBadge();
       const [busy, setBusy] = React.useState(false);
       const [errorMsg, setErrorMsg] = React.useState("");
@@ -811,6 +838,10 @@ window.__ModuleLoader__.load({
                   return next.length > 500 ? next.slice(next.length - 500) : next;
                 });
               }
+              // A dead stream (spawn failure / device unplugged) must be
+              // surfaced: the Host reports it via `error` and `closed`, and
+              // silently stopping used to leave "等待日志…" on screen forever.
+              if (typeof out.value.error === "string" && out.value.error) setErrorMsg(out.value.error);
               if (out.value.closed) setHilogRunning(false);
             }
           } catch (e) { /* */ }
@@ -1025,7 +1056,7 @@ window.__ModuleLoader__.load({
         ),
         React.createElement(
           "div", { className: "harm-row" },
-          React.createElement(DevicePicker, { devices, device, setDevice, refresh: refreshDevices, busy }),
+          React.createElement(DevicePicker, { devices, device, setDevice, refresh: refreshDevices, busy, error: deviceError }),
           hilogRunning
             ? React.createElement("button", { className: "harm-btn harm-btn-danger", disabled: busy, onClick: stopHilog }, "停止")
             : React.createElement("button", { className: "harm-btn harm-btn-primary", disabled: busy, onClick: startHilog }, "开始"),
@@ -1229,7 +1260,7 @@ window.__ModuleLoader__.load({
     }
 
     function HarmonyArkUITab(props) {
-      const { devices, device, setDevice, refresh: refreshDevices } = useDeviceList();
+      const { devices, device, setDevice, refresh: refreshDevices, deviceError } = useDeviceList();
       const badge = useToolchainBadge();
       const [busy, setBusy] = React.useState(false);
       const [errorMsg, setErrorMsg] = React.useState("");
@@ -1321,6 +1352,7 @@ window.__ModuleLoader__.load({
         setTrees((prev) => Object.assign({}, prev, { [source === "deveco" ? "deveco" : "uitest"]: nodes }));
         if (!tree.ok) problems.push((tree.error && (tree.error.message || tree.error.code)) || (source === "deveco" ? "DevEco 调试树获取失败" : "dump 失败"));
         if (wins.ok) setWindows(Array.isArray(wins.value && wins.value.windows) ? wins.value.windows : []);
+        else problems.push("窗口列表获取失败：" + ((wins.error && (wins.error.message || wins.error.code)) || "未知错误"));
         if (cap.ok && cap.value && cap.value.dataUrl) {
           setShot({ dataUrl: cap.value.dataUrl, imageWidth: cap.value.imageWidth, imageHeight: cap.value.imageHeight });
         } else if (!cap.ok) {
@@ -1989,7 +2021,7 @@ window.__ModuleLoader__.load({
         ),
         React.createElement(
           "div", { className: "harm-row" },
-          React.createElement(DevicePicker, { devices, device, setDevice, refresh: refreshDevices, busy }),
+          React.createElement(DevicePicker, { devices, device, setDevice, refresh: refreshDevices, busy, error: deviceError }),
           treeSourceSelect,
           windowSelect,
           React.createElement("button", { className: "harm-btn", disabled: busy, onClick: () => doDump(windowId, treeSource) }, busy ? "抓取中…" : "Dump UI"),
@@ -2346,7 +2378,7 @@ window.__ModuleLoader__.load({
           "DevEco Studio / Command Line Tools 路径、三平台自发现与互斥规则"),
         React.createElement(
           "p", { className: "harm-cardNote" },
-          "两者互斥：保存 CLT 会清空 Studio，反之亦然；同时配置时优先 CLT（最低 26.0.0）。PATH 中存在 devecocli 时优先使用并忽略以下路径。",
+          "两者互斥：保存 CLT 会清空 Studio，反之亦然；同时配置时优先 CLT（最低 26.0.0）。devecocli 是独立 npm 包（@deveco/deveco-cli），不随 Studio / CLT 安装——PATH 中存在时优先使用并忽略以下路径；未安装时设备 / 日志 / 截图 / 操作会自动降级到 SDK 自带的 hdc。",
         ),
         studioField,
         cltField,
