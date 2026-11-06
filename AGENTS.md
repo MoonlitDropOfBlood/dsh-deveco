@@ -29,8 +29,9 @@ dsh-deveco/
 ├── harmony-debugger.mjs      # 零依赖：ArkTS 运行时调试器会话（裸 socket WS + CDP 风格 JSON-RPC；断点/暂停/单步/求值/属性）
 ├── harmony-agent-tools.mjs   # 零依赖：agent 工具定义（harmony_debug），执行经 host 端口注入
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 113 个独立核心单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归 + hdc 降级）
+├── scripts/self-test.mjs     # 130 个独立核心单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归 + hdc 降级 + 断点通知）
 ├── scripts/e2e-agent-tools.mjs  # 真机/模拟器跑 agent 调试工具的端到端探针（不依赖 DSH）
+├── scripts/e2e-breakpoint-notify.mjs  # 断点通知链路端到端探针（假 ArkVM 服务端，不依赖设备/DSH）
 ├── docs/arkts-debug-recon.md        # ArkTS 调试协议实测调研（615 行，每条结论带证据与置信度）
 ├── docs/recon-scripts/               # 调研用探针（arkts-debug-probe*.mjs、jar 常量池提取脚本）
 ├── .github/workflows/release.yml  # v* tag → 构建 + 发布 GitHub Release
@@ -179,11 +180,33 @@ Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的
 
 | 工具 | 动作 | 底层 |
 |---|---|---|
-| `harmony_debug` | attach / status / scripts / set_breakpoint / remove_breakpoint / breakpoints / pause / resume / step / run / stack / evaluate / properties / exceptions / events / detach | **ArkTS 运行时调试器**（见 §11） |
+| `harmony_debug` | attach / status / scripts / set_breakpoint / remove_breakpoint / breakpoints / pause / resume / step / run / stack / evaluate / properties / exceptions / events / notify / detach | **ArkTS 运行时调试器**（见 §11） |
 
 - **不重复造 devecocli 的轮子（用户决策）**：`devecocli log` 已覆盖日志（`--level/--keyword/--bundle-name/--tail/--format json/--follow`），`devecocli device app` 已覆盖 list/info/start/stop/install/uninstall（`device app info --format json` 里就有 `applicationInfo.appProvisionType`＝debug 签名判定），`devecocli ui layout` 覆盖布局树。**因此不提供 `harmony_hilog` / `harmony_app` 工具**——agent 直接跑 CLI 即可；插件只补 devecocli 没有的那块：**ArkTS 运行时调试器**。
 - **工具描述里要点明分工**（`harmony_debug.description` 末段）：日志走 `devecocli log`、应用管理走 `devecocli device app`、UI 树走 `harmony_ui_tree`——避免 agent 在三处重复试探。
 - **`harmony_debug` 需要的两个非 devecocli 事实**由工具内部自己解决：① **debug 签名判定**（`bm dump -n` → `applicationInfo.appProvisionType == "debug"`；stage 模型应用的 mainAbility 在 `hapModuleInfos[]` 里，**顶层没有 `mainElementName`**，2026-11 实测踩过）；② **wait-for-debugger 启动**（`aa appdebug` → `aa force-stop` → `aa start -D`）。
+
+### 10.1 断点命中 → 自动通知 agent（v0.5.0 新增）
+
+**需求**：应用停在断点时 agent 应当**知道**——否则只能轮询 `harmony_debug(action=status)` 才知道它停了。
+
+**机制**（与 harness 自带的 `@deepseek-ai/dsh-tool-jobs`「后台任务完成→通知 agent」同构，是官方认可的模式）：
+
+1. **拿到 agent**：`harmony_debug` 的 `execute(args, exec)` 里 `exec.agent` 就是**当前这次调用所属的 agent**（agent loop 调 `tools.execute({agent: this, …})` 时注入；`exec.agent.id` 就是 session id）。工具把它记到会话上（`session.ownerAgent` / `session.ownerSessionId`），此后任何一次 `harmony_debug` 动作都会刷新属主（谁最后在用调试器谁就是属主）。
+2. **监听暂停**：会话上挂 `Debugger.paused` 监听（`installPauseNotifier`，幂等）。暂停发生 → 组装通知（`formatPauseNotification`：应用名/pid/设备、暂停原因、命中断点、暂停位置、**最多 8 帧调用栈**、下一步动作建议）→ 交给 Host 投递。
+3. **投递**（`index.js` 的 `_notifyDebugAgent`）：经 `ctx.get("agents")` 取**活的** agent（`registry.get(agent.id)`；会话已销毁则丢弃）→ 构造 notice 消息（`createDebugNoticeMessage`：`{id: uuid, role:'user', content:[{type:'text',…}], source:{kind:'dsh-deveco-debug', form:'notice', summary}}`）→ **idle 用 `followup`（开新一轮），running 用 `inject`（塞进下一步，不打断当前轮）**。
+4. **抑制重复**：自己触发的暂停（attach 入口暂停、`action=pause`、`action=step`）已经由工具结果内联回报，**不再推送**——靠会话上的「期望暂停」计数器（`noteExpectedPause`/`consumeExpectedPause`，带 TTL，用完即清）。
+5. **防死循环**：连续唤醒预算 `DEBUG_MAX_CONSECUTIVE_WAKES = 3`——超预算后只入队不唤醒（决策函数 `decideDebugNoticeDelivery`，纯函数可单测）。预算在**人类发言**（`agent/inbox/claimed` 且 `message.source.kind === 'user'`）或**agent 又用了调试器**（`host.noteAgentActivity`）时清零。
+6. **可关闭**：`harmony_debug(action=notify, enabled=false)` 关闭本会话的自动通知；`attach(notify=false)` 同样。
+
+**关键坑**：
+
+- **`@deepseek-ai/dsh-llm` 不是本插件的依赖**（`createUserMessage` 用不到），所以 notice 消息**自己拼**（uuid + role + content + source）——与 `createUserMessage` 的产物形状一致（`brandString` 是运行时空操作）。
+- **消息 source kind 是插件自定义的**（`'dsh-deveco-debug'`）：harness 的 `MessageSourceMap` 是**可扩展联合**（各生产者声明自己的 kind，客户端对未知 kind 走 default 分支＝普通「请求」触发器，不会渲染坏）。
+- **不要用 `exec.deferContext`**：它只在**这次工具调用结束前**有效，而断点命中发生在调用之外（甚至 agent 空闲时）。异步通知只能走 agent 的 inbox（`followup`/`inject`）。
+- **「已内联回报的暂停」不能重复推送**（2026-11-07 真机踩坑）：抑制机制有三层，缺一不可——① **期望暂停**（`noteExpectedPause`/`consumeExpectedPause`）带**原因限定**：`attach` 的期望只匹配启动类原因，绝不吞掉真正的断点命中；**attach 之后不要无条件 `clearExpectedPauses()`**——`waitForEntry` 一收到首个 `scriptParsed` 就返回，入口暂停可能**在它之后**才到，blanket clear 会让它漏网。② **启动类原因噪音过滤**（`isStartupPause`，见 §11）。③ **`markPauseReportedInline()`**：工具结果里已经带上的那一次暂停，给 `session.paused` 快照打标记（快照每次事件都是新对象 → 标记精确到那一次），通知器直接跳过。
+- **`resume` 只能清「自己那一份」暂停快照**：`session.paused = null` 会把 resume **之后**新到的暂停一起抹掉——于是「通知到了但 `stack` 说当前未暂停」。改成 `if (session.paused === before) session.paused = null`（比对对象身份）。
+- **`ctx.get("agents")` 不是 `ctx.agents`**：插件没 inject `agents` 服务，直接取属性拿不到；`ctx.get(name)` 才是「有就用、没有就 undefined」的写法。
 
 
 ### 11. ArkTS 运行时调试器（实测链路，docs/arkts-debug-recon.md 有完整证据）
@@ -196,6 +219,10 @@ Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的
 - **实测可复现流程（唯一能拿到活的调试实例的方式）**：`aa appdebug -b <bundle>` → `aa force-stop <bundle>` → `aa start -a <ability> -b <bundle>` → 取 pid → `hdc fport` → 握手 → `Runtime.enable` + `Debugger.enable` → **`Runtime.runIfWaitingForDebugger`**（**关键**：放行等待调试器的应用后 runtime 才注册脚本并发出入口 `Debugger.paused`「Break on start」；不发明这条消息就是"空会话"：无 scriptParsed、pause 不触发）→ 之后 `Debugger.scriptParsed` 陆续到达。
 - **单客户端**：同一 ark 目标并发第二条 WS **连 101 都拿不到**（静默挂起）——握手必须带超时（6s），超时报"被 DevEco/其它会话占用"。
 - **求值实测**：`evaluateOnCallFrame("1+1")` 在入口暂停帧返回 `{"type":"undefined"}`（入口帧无局部变量），`globalThis` 返回带 `objectId` 的对象；**别把 undefined 当失败**。
+- **ArkVM 对**每个加载的模块**都发一次 `Debugger.paused`（reason="Break on start"）**（2026-11-07 真机实测：`com.dukedsh.remotecontrol` attach 后依次收到 `scriptParsed` → `paused(Break on start)` → `resume` → `scriptParsed` → `paused(Break on start @ hrouter|hrouter|2.0.0|src/main/ets/api/ModuleLoader.ts:8)`——第二次是**库模块**的初始化暂停）。**这些启动类暂停是噪音**：入口那次由 attach 结果内联回报，库模块那些与 agent 的断点无关。规则：**reason 属于 `STARTUP_PAUSE_REASONS`（break on start / on start / on entry / entry / startup）的暂停一律不推送**；通知只关心 `break`（断点命中）、`exception`（异常）等。
+- **ArkVM 对**每一个新加载的脚本**都发一次 `Debugger.paused(reason="Break on start")`**（2026-11-07 模拟器实测：远程控制 app 一次加载 **55 个脚本 = 55 次启动暂停**；不处理的话 app 永远卡在启动页，agent 要 resume 55 次才跑得起来）。**解法：`Debugger.setSkipAllPauses {skip:true}`**——必须在 `Runtime.runIfWaitingForDebugger` **之前**下发，实测 `scriptParsed=55 / paused=0`，app 一次跑完。**这个开关是 app 进程级状态**：上一轮会话开过 skip，同一个 app 再 attach 就会一直不暂停，所以「不跳过」必须**显式**下发一次 `skip:false`。插件侧：`attach` 默认 `skip_pauses=true`；`set_breakpoint`/`pause`/`step` 会先 `ensurePausesEnabled()` 再动作（跳过期间断点不命中）；另有独立动作 `skip_pauses` 手动开关。
+- **断点行号是「编译产物」的行号，不是 .ets 源码行号**（2026-11-07 实测踩坑：源码 `onCreateSession` 在 296 行，编译后在 **340** 行；按源码行号设断点 → `id:"invalid"` 或永不命中）。编译产物在 `app/entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets/...`（debug 构建；release 在 `esmodule/release/...`）。runtime 上报的 url 形态 `<moduleName>|<moduleName>|<version>|<工程内相对路径>`（例：`entry|entry|1.0.0|src/main/ets/pages/Index.ts`）——**第二段是模块名不是 bundle 名**，扩展名是 **`.ts`**（源码是 `.ets`）。
+- **断点命中的 `paused.reason` 是 `other`，不是 `break`**（实测 `paused reason=other @ entry|entry|1.0.0|src/main/ets/pages/Index.ts:341`）。通知文案要把「other + 有 hitBreakpoints」翻译成「断点命中」，别把 `other` 原样甩给 agent。
 - **会话生命周期**：`index.js` 持有 `this._debugSessions`（pid → session），插件 dispose 时逐个 `close()` 并 `fport rm`（**漏规则会挡住下一次 attach**）。同一 pid 重复 attach 复用会话；多会话时工具要求显式给 `pid`。
 - **端口**：`pickFreePort()` 取空闲端口；`hdc fport` 回 `[Fail]TCP Port listen failed at <p>` 说明端口被占（残留规则/别的会话），**换端口重试**（最多 3 次）而不是连进别人的端口。
 
@@ -229,8 +256,11 @@ Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的
 
 ```bash
 npm run check              # 全部 JS 语法检查（含 3 个新模块）
-npm test                   # 113 个单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归 + hdc 降级）
+npm test                   # 130 个单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归 + hdc 降级 + 断点通知文案/投递决策/暂停抑制）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --attach   # 真机/模拟器跑 agent 调试工具（不依赖 DSH）
+npm run e2e:notify             # 断点通知链路端到端（**不依赖设备**：假 ArkVM 服务端 + 真会话 + 真工具 + 真 Host 投递）
+node docs/recon-scripts/arkts-debug-probe-skip.mjs --bundle <pkg>    # 探针：setSkipAllPauses 能不能压掉逐脚本启动暂停
+node docs/recon-scripts/arkts-debug-probe-break.mjs --bundle <pkg>   # 探针：skip=false 后断点是否仍命中（配 devecocli ui click 触发）
 dsh plugin --profile web add .   # 本地安装/重装
 ```
 

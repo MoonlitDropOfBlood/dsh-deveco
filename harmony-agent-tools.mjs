@@ -34,7 +34,11 @@ import {
   buildDebuggerForwardRemoveArgs,
   pickFreePort,
   formatCallFrameLines,
+  formatPauseNotification,
+  isStartupPause,
+  STARTUP_PAUSE_REASONS,
   summarizeCallFrames,
+  describePauseReason,
 } from './harmony-debugger.mjs'
 
 /** Errors thrown by tools become `isError` text; keep messages actionable. */
@@ -99,7 +103,7 @@ function textOf (r) {
 const DEBUG_ACTIONS = [
   'attach', 'status', 'scripts', 'set_breakpoint', 'remove_breakpoint', 'breakpoints',
   'pause', 'resume', 'step', 'run', 'stack', 'evaluate', 'properties', 'exceptions',
-  'events', 'detach',
+  'events', 'notify', 'skip_pauses', 'detach',
 ]
 
 /** Pick the session named by pid, or the only live one. */
@@ -136,7 +140,75 @@ async function waitForPid (host, device, bundle, timeoutMs = 8000) {
   return last
 }
 
-async function attachSession (host, args) {
+/**
+ * Bind the calling agent to the session so later pauses can reach it.
+ *
+ * The Agent is the live runtime face (`ctx.agents` entry) — its id is the
+ * Session id, which is how the Host resolves the agent again when the pause
+ * arrives outside any tool call.
+ *
+ * @param {object} session
+ * @param {object} [exec] tool run context (`exec.agent`)
+ * @param {object} [host] optional host port (`host.noteAgentActivity`)
+ * @returns {object|null} the bound agent
+ */
+function claimOwner (session, exec, host) {
+  const agent = exec && exec.agent ? exec.agent : null
+  if (!agent) return null
+  session.ownerAgent = agent
+  session.ownerSessionId = String(agent.id || '')
+  // The agent used the debugger again: it reacted, so it may be woken again.
+  if (host && typeof host.noteAgentActivity === 'function') {
+    try { host.noteAgentActivity(agent) } catch (_) { /* best effort */ }
+  }
+  return agent
+}
+
+/**
+ * Push one pause notification to the owning agent.
+ *
+ * The app can stop for reasons the agent never asked for (a breakpoint hit, an
+ * exception pause). Without this the agent would have to poll `action=status`
+ * to notice the stop. Pauses the tool already reports inline (attach entry
+ * pause, explicit `pause`, `step`) are suppressed by the session's expected
+ * -pause counter, so the agent never gets the same stop twice.
+ *
+ * Exported for the self-test (the delivery contract is unit-tested with a
+ * fake host and a real session).
+ *
+ * @param {object} session
+ * @param {object} host
+ */
+export function installPauseNotifier (session, host) {
+  if (session.pauseNotifierInstalled) return
+  session.pauseNotifierInstalled = true
+  session.on('Debugger.paused', () => {
+    const reason = session.paused && typeof session.paused.reason === 'string' ? session.paused.reason : ''
+    if (session.consumeExpectedPause(reason)) return
+    // Module-initialization pauses ("Break on start") are startup noise: the
+    // first one is reported inline by attach, the rest belong to library
+    // loading, not to the agent's breakpoint.
+    if (isStartupPause(reason)) return
+    // A pause a tool result already carried must not be pushed a second time.
+    if (session.paused && session.paused.reportedInline === true) return
+    if (session.notifyEnabled === false) return
+    const owner = session.ownerAgent
+    if (!owner) return
+    if (typeof host.notifyAgent !== 'function') return
+    const notice = formatPauseNotification({
+      bundleName: session.bundleName,
+      pid: session.pid,
+      device: session.device,
+      paused: session.paused,
+    })
+    try {
+      const result = host.notifyAgent({ agent: owner, text: notice.text, summary: notice.summary })
+      if (result && typeof result.catch === 'function') result.catch(() => {})
+    } catch (_) { /* a failed notice must never break the debugger */ }
+  })
+}
+
+async function attachSession (host, args, exec) {
   const device = await resolveDevice(host, args.device)
   const bundle = typeof args.package_name === 'string' ? args.package_name.trim() : ''
   if (bundle && !isBundleName(bundle)) throw fail('package_name 必须是合法包名（如 com.example.app）')
@@ -181,6 +253,9 @@ async function attachSession (host, args) {
   if (!pid) throw fail('attach 需要 package_name 或 pid')
   const existing = host.sessions.get(pid)
   if (existing) {
+    claimOwner(existing, exec, host)
+    installPauseNotifier(existing, host)
+    if (args.notify === false) existing.notifyEnabled = false
     return { session: existing, reused: true, launchNote }
   }
 
@@ -223,16 +298,35 @@ async function attachSession (host, args) {
   if (!port) throw fail('无法分配可用的本地端口用于 hdc fport：多次 `TCP Port listen failed`，请检查是否有残留的 fport 规则（hdc fport ls）。')
 
   const session = new ArktsDebuggerSession({ pid, port, bundleName, device })
+  // The entry pause ("Break on start") is reported inline by this attach
+  // result, so it must not also be pushed to the agent. The expectation is
+  // scoped to the startup reasons and deliberately NOT cleared below: the
+  // runtime may emit the entry pause *after* waitForEntry returned (it
+  // returns as soon as the first script is parsed), and the ArkVM emits one
+  // "Break on start" per loaded module.
+  session.noteExpectedPause(15000, { reasons: STARTUP_PAUSE_REASONS })
   try {
     await session.connect(6000)
-    const ini = await session.init({ runIfWaiting: args.run_if_waiting !== false })
+    // 启动期默认跳过 ArkVM 的「每脚本一次 Break on start」暂停——否则 app
+    // 会卡在启动页（实测 55 个脚本 = 55 次 resume，agent 根本没法调试）。
+    // agent 传 skip_pauses=false 可以保留逐脚本暂停（调试启动流程时用）。
+    const ini = await session.init({
+      runIfWaiting: args.run_if_waiting !== false,
+      skipPauses: args.skip_pauses !== false,
+    })
     if (!ini.ok) throw new Error((ini.error && ini.error.message) || 'Debugger.enable 失败')
+    // 跳过暂停时没有入口暂停，但 scriptParsed 会照常到达——waitForEntry 两者都等。
     await session.waitForEntry(2500)
   } catch (error) {
     session.close()
     await host.hdc(buildDebuggerForwardRemoveArgs(port, pid), 15000).catch(() => {})
     throw fail(`${error && error.message ? error.message : String(error)}（提示：同一 ark 目标同一时刻只允许一个调试客户端，DevEco 调试会话开着时会连接不上）`)
   }
+  // This attach result carries the current pause inline.
+  session.markPauseReportedInline()
+  if (args.notify === false) session.notifyEnabled = false
+  claimOwner(session, exec, host)
+  installPauseNotifier(session, host)
   host.sessions.set(pid, session)
   const scripts = [...session.scripts.entries()].map(([url, scriptId]) => ({ url, scriptId }))
   const warning = []
@@ -246,11 +340,13 @@ async function attachSession (host, args) {
     warning: warning.join(' '),
     data: {
       protocols: session.protocols,
+      skipPauses: session.skipPauses,
       scriptCount: scripts.length,
       scripts: scripts.slice(0, 40),
       paused: session.paused
         ? {
-            reason: session.paused.reason,
+            reason: describePauseReason(session.paused),
+            rawReason: session.paused.reason,
             frames: session.paused.frames,
             stackLines: formatCallFrameLines(session.paused.frames),
           }
@@ -264,8 +360,9 @@ function buildHarmonyDebugTool (defineTool, host) {
     name: 'harmony_debug',
     description: [
       'Debug a running ArkTS app on a HarmonyOS device with the ArkVM remote debugger — the channel DevEco Studio itself uses (hdc fport ark:<pid>@Debugger + a CDP-style JSON-RPC session).',
-      'Actions: attach (with launch=true it performs the verified wait-for-debugger flow: aa appdebug -b → aa force-stop → aa start -D → fport → handshake; without launch it attaches to a running pid), status/scripts (loaded script URLs to set breakpoints on), set_breakpoint/remove_breakpoint/breakpoints, pause/resume, step (over/into/out), stack (frames of the last Debugger.paused), evaluate (Debugger.evaluateOnCallFrame — Runtime.evaluate is unsupported by this runtime and the call must happen while paused), properties (Runtime.getProperties on a scope/object id), exceptions (setPauseOnExceptions none|uncaught|all), events (recent protocol events), detach.',
+      'Actions: attach (with launch=true it performs the verified wait-for-debugger flow: aa appdebug -b → aa force-stop → aa start -D → fport → handshake; without launch it attaches to a running pid), status/scripts (loaded script URLs to set breakpoints on), set_breakpoint/remove_breakpoint/breakpoints, pause/resume, step (over/into/out), stack (frames of the last Debugger.paused), evaluate (Debugger.evaluateOnCallFrame — Runtime.evaluate is unsupported by this runtime and the call must happen while paused), properties (Runtime.getProperties on a scope/object id), exceptions (setPauseOnExceptions none|uncaught|all), events (recent protocol events), notify (turn the automatic breakpoint notification on/off), skip_pauses (turn the runtime "skip all pauses" startup fast-forward on/off — setting a breakpoint or pausing turns it off automatically), detach. IMPORTANT: breakpoint line numbers refer to the COMPILED script (the runtime reports e.g. "entry|entry|1.0.0|src/main/ets/pages/Index.ts"), not the .ets source — the build output lives under app/entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets/... and its line numbers differ from the source.',
       'Breakpoint URLs must equal the scriptParsed.url exactly (e.g. entry|hrouter|2.0.0|src/main/ets/...); lines are 0-based. Errors are returned inside result.code/message by the runtime, so a successful call means no code member. Only one debugger client per pid is allowed: an IDE debug session blocks attach, and attaching to an app that was not started with wait-for-debugger often yields an empty session (no scriptParsed/paused) — the tool reports that explicitly instead of pretending the session works.',
+      'When the app stops at a breakpoint (or on an exception) this session is notified automatically with the pause location and the call stack — you receive it as an in-session message, so do not poll action=status in a loop to detect it. Pauses you trigger yourself (attach entry pause, action=pause, action=step) are reported inline by the tool result instead and are never pushed twice.',
       'This tool is only for the ArkTS runtime debugger. Device logs: devecocli log (--level/--keyword/--bundle-name/--tail/--format json) when DevEco CLI is installed, otherwise hdc shell hilog. App management: devecocli device app (list/info/start/stop/install/uninstall) or hdc/bm/aa shell commands. The UI tree is available through the harmony_ui_tree tool.',
     ].join(' '),
     parameters: {
@@ -288,6 +385,10 @@ function buildHarmonyDebugTool (defineTool, host) {
       object_id: { type: 'string', description: 'properties: remote object id (from scopeChain / evaluate result).' },
       state: { type: 'string', enum: ['none', 'uncaught', 'all'], description: 'exceptions: pause-on-exception state.' },
       step: { type: 'string', enum: ['over', 'into', 'out'], description: 'step: which step command.' },
+      enabled: { type: 'boolean', description: 'notify: turn the automatic breakpoint notification on (true) or off (false).' },
+      notify: { type: 'boolean', description: 'attach only: set false to skip the automatic breakpoint notification for this session (default true).' },
+      skip_pauses: { type: 'boolean', description: 'attach only: set false to keep the runtime pausing on every loaded script (default true = skip those startup pauses so the app actually runs).' },
+      skip: { type: 'boolean', description: 'skip_pauses: true = skip all pauses (startup fast-forward), false = normal pausing (breakpoints work).' },
       limit: { type: 'integer', description: 'events/scripts: maximum rows to return (default 20).' },
     },
     output: {
@@ -326,10 +427,10 @@ function buildHarmonyDebugTool (defineTool, host) {
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    async execute (args) {
+    async execute (args, exec) {
       const action = String(args.action || '')
       if (action === 'attach') {
-        const attached = await attachSession(host, args)
+        const attached = await attachSession(host, args, exec)
         const data = attached.reused
           ? { reused: true, protocols: attached.session.protocols }
           : attached.data
@@ -353,9 +454,13 @@ function buildHarmonyDebugTool (defineTool, host) {
         })
       }
       const session = sessionFor(host, args.pid)
+      // The calling agent owns the session from now on: a later pause is
+      // reported to whoever asked for the debug session last.
+      claimOwner(session, exec, host)
+      installPauseNotifier(session, host)
       if (action === 'status') {
         return debugResult('status', session, {
-          message: session.paused ? `已暂停（${session.paused.reason || 'break'}）` : '运行中',
+          message: session.paused ? `已暂停（${describePauseReason(session.paused)}）` : '运行中',
           data: {
             protocols: session.protocols,
             scripts: [...session.scripts.keys()].length,
@@ -377,6 +482,8 @@ function buildHarmonyDebugTool (defineTool, host) {
         })
       }
       if (action === 'set_breakpoint') {
+        // 断点只在「不跳过暂停」时才会命中——先把启动期跳过的开关关掉。
+        await session.ensurePausesEnabled()
         const reply = await session.setBreakpoint({ url: args.url, line: args.line, column: args.column, condition: args.condition })
         if (!reply.ok) throw fail(`设置断点失败：${(reply.error && reply.error.message) || 'unknown error'}`)
         const anyInvalid = Array.isArray(reply.value.locations) && reply.value.locations.some((l) => l.id === 'invalid')
@@ -385,6 +492,17 @@ function buildHarmonyDebugTool (defineTool, host) {
             ? '断点已记录，但该 url 当前没有已加载脚本可落点（id:"invalid"）——确认 url 与 scriptParsed.url 完全一致，或等脚本加载后再试。'
             : '断点已设置',
           data: { breakpointId: reply.value.breakpointId, locations: reply.value.locations, breakpoints: session.breakpoints },
+        })
+      }
+      if (action === 'skip_pauses') {
+        const skip = args.skip !== false
+        const reply = await session.setSkipAllPauses(skip)
+        if (!reply.ok) throw fail(`设置跳过暂停失败：${(reply.error && reply.error.message) || 'unknown error'}`)
+        return debugResult('skip_pauses', session, {
+          message: skip
+            ? '已开启「跳过暂停」：应用加载脚本时不再逐个停下（启动期用）。设断点/pause/step 会自动关掉它。'
+            : '已关闭「跳过暂停」：断点、pause、step 恢复生效（应用每加载一个新脚本会停一次）。',
+          data: { skipPauses: session.skipPauses },
         })
       }
       if (action === 'remove_breakpoint') {
@@ -399,12 +517,21 @@ function buildHarmonyDebugTool (defineTool, host) {
         })
       }
       if (action === 'pause') {
+        // 显式暂停在「跳过暂停」状态下不会生效——先关掉。
+        await session.ensurePausesEnabled()
+        // This pause is reported inline below — it must not also be pushed.
+        session.noteExpectedPause(8000)
         const pending = session.waitEvent('Debugger.paused', null, 6000).then((params) => params, () => null)
         const reply = await session.pause()
-        if (!reply.ok) throw fail(`pause 失败：${(reply.error && reply.error.message) || 'unknown error'}`)
+        if (!reply.ok) {
+          session.clearExpectedPauses()
+          throw fail(`pause 失败：${(reply.error && reply.error.message) || 'unknown error'}`)
+        }
         const paused = await pending
+        if (!paused) session.clearExpectedPauses()
+        else session.markPauseReportedInline()
         return debugResult('pause', session, {
-          message: paused ? `已暂停：${session.paused ? session.paused.reason : ''}` : 'pause 已受理，但 6s 内没有 Debugger.paused（空闲 JS 线程无检查点；触发一次交互或改用断点）',
+          message: paused ? `已暂停：${session.paused ? describePauseReason(session.paused) : ''}` : 'pause 已受理，但 6s 内没有 Debugger.paused（空闲 JS 线程无检查点；触发一次交互或改用断点）',
           data: { paused: session.paused ? { reason: session.paused.reason, frames: session.paused.frames } : null },
         })
       }
@@ -413,17 +540,33 @@ function buildHarmonyDebugTool (defineTool, host) {
         if (!reply.ok) throw fail(`resume 失败：${(reply.error && reply.error.message) || 'unknown error'}`)
         // The runtime may not emit Debugger.resumed for an entry pause, so
         // clear the local pause state ourselves — otherwise `stack` would keep
-        // reporting the stale frames.
+        // reporting the stale frames. Only clear the snapshot we paused at: a
+        // pause the runtime reports *after* the resume (the ArkVM emits one
+        // "Break on start" per loaded module) must survive.
+        const before = session.paused
         await new Promise((resolve) => setTimeout(resolve, 200))
-        session.paused = null
+        if (session.paused === before) session.paused = null
         return debugResult('resume', session, { message: '已继续运行' })
       }
       if (action === 'step') {
         const kind = ['over', 'into', 'out'].includes(args.step) ? args.step : 'over'
+        // 单步依赖暂停——先关掉「跳过暂停」。
+        await session.ensurePausesEnabled()
+        // The step's own pause is reported inline below.
+        session.noteExpectedPause(8000)
+        const pending = session.waitEvent('Debugger.paused', null, 3000).then((params) => params, () => null)
         const reply = await session.step(kind)
-        if (!reply.ok) throw fail(`step 失败：${(reply.error && reply.error.message) || 'unknown error'}`)
+        if (!reply.ok) {
+          session.clearExpectedPauses()
+          throw fail(`step 失败：${(reply.error && reply.error.message) || 'unknown error'}`)
+        }
+        // The runtime answers the step request before it emits the new pause;
+        // wait for that event so the reported frames are the stepped-to ones.
+        const paused = await pending
+        if (!paused) session.clearExpectedPauses()
+        else session.markPauseReportedInline()
         return debugResult('step', session, {
-          message: `已执行 step ${kind}`,
+          message: `已执行 step ${kind}${paused ? `（已停在 ${session.paused && session.paused.frames[0] ? session.paused.frames[0].url + ':' + ((session.paused.frames[0].lineNumber || 0) + 1) : '新位置'}）` : ''}`,
           data: { paused: session.paused ? { reason: session.paused.reason, frames: session.paused.frames } : null },
         })
       }
@@ -438,7 +581,7 @@ function buildHarmonyDebugTool (defineTool, host) {
         }
         const frames = session.paused.frames
         return debugResult('stack', session, {
-          message: `暂停原因：${session.paused.reason || 'unknown'}${session.paused.hitBreakpoints && session.paused.hitBreakpoints.length ? ` · 命中：${session.paused.hitBreakpoints.join(', ')}` : ''}`,
+          message: `暂停原因：${describePauseReason(session.paused)}${session.paused.hitBreakpoints && session.paused.hitBreakpoints.length ? ` · 命中：${session.paused.hitBreakpoints.join(', ')}` : ''}`,
           data: { reason: session.paused.reason, frames, stackLines: formatCallFrameLines(frames) },
         })
       }
@@ -465,6 +608,16 @@ function buildHarmonyDebugTool (defineTool, host) {
         return debugResult('events', session, {
           message: `${session.events.length} 条事件（显示最近 ${Math.min(limit, session.events.length)}）`,
           data: { events: session.events.slice(-limit) },
+        })
+      }
+      if (action === 'notify') {
+        const enabled = args.enabled !== false
+        session.notifyEnabled = enabled
+        return debugResult('notify', session, {
+          message: enabled
+            ? '已开启断点通知：应用停在断点/异常暂停时，本会话会自动收到一条包含暂停位置与调用栈的消息。'
+            : '已关闭断点通知：应用停在断点时不再自动通知（需要时用 action=status 自行查询）。',
+          data: { notifyEnabled: enabled },
         })
       }
       throw fail(`未知 action：${action}`)

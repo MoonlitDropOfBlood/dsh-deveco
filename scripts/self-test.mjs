@@ -31,8 +31,11 @@ import {
 } from '../harmony-tools.mjs'
 import {
   debuggerForwardTarget, buildDebuggerForwardArgs, buildDebuggerForwardRemoveArgs,
-  isDebuggerError, summarizeCallFrames, formatCallFrameLines
+  isDebuggerError, summarizeCallFrames, formatCallFrameLines,
+  ArktsDebuggerSession, shortScriptUrl, formatPauseNotification, createDebugNoticeMessage, describePauseReason,
+  decideDebugNoticeDelivery
 } from '../harmony-debugger.mjs'
+import { installPauseNotifier } from '../harmony-agent-tools.mjs'
 
 test('loadConfig returns empty when file missing', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'dsh-deveco-'))
@@ -1812,4 +1815,332 @@ test('client surfaces the hdc-degraded badge and device-list errors', () => {
   assert.match(clientSource, /hdc 降级/)
   assert.match(clientSource, /cliAvailable === false/)
   assert.match(clientSource, /设备列表获取失败/)
+})
+
+// ---- ArkTS 调试器：断点命中 → 通知 agent -------------------------------------
+
+test('shortScriptUrl keeps the file name of an ArkTS script url', () => {
+  assert.equal(shortScriptUrl('entry|com.example|1.0.0|src/main/ets/pages/Index.ets'), 'Index.ets')
+  assert.equal(shortScriptUrl(''), '')
+  assert.equal(shortScriptUrl(undefined), '')
+  assert.equal(shortScriptUrl('entry|com.example|1.0.0|EntryAbility.ets'), 'EntryAbility.ets')
+})
+
+test('formatPauseNotification reports the stop location, the stack and the next actions', () => {
+  const { text, summary } = formatPauseNotification({
+    bundleName: 'com.example.app',
+    pid: 4321,
+    device: 'emulator-5554',
+    paused: {
+      reason: 'break',
+      hitBreakpoints: ['id:41:0:entry|com.example|1.0.0|src/main/ets/pages/Index.ets'],
+      frames: [
+        { callFrameId: '1', functionName: 'onPageShow', url: 'entry|com.example|1.0.0|src/main/ets/pages/Index.ets', lineNumber: 41, columnNumber: 0, scriptId: '7' },
+        { callFrameId: '2', functionName: 'build', url: 'entry|com.example|1.0.0|src/main/ets/pages/Index.ets', lineNumber: 12, columnNumber: 0, scriptId: '7' },
+      ],
+    },
+  })
+  // 行号是 1 基展示（协议里是 0 基）
+  assert.match(text, /Index\.ets:42/)
+  assert.match(text, /com\.example\.app \(pid 4321\)/)
+  assert.match(text, /emulator-5554/)
+  assert.match(text, /命中断点：id:41:0:/)
+  assert.match(text, /#0 onPageShow @ entry\|com\.example\|1\.0\.0\|src\/main\/ets\/pages\/Index\.ets:42/)
+  assert.match(text, /action=stack/)
+  assert.match(text, /action=resume/)
+  assert.match(summary, /com\.example\.app 已暂停于 Index\.ets:42/)
+})
+
+test('formatPauseNotification survives an empty pause', () => {
+  const { text, summary } = formatPauseNotification({})
+  assert.match(text, /目标应用/)
+  assert.match(text, /未知位置/)
+  assert.ok(summary.length > 0)
+})
+
+test('createDebugNoticeMessage builds a user-role notice with a bounded summary', () => {
+  const message = createDebugNoticeMessage('正文', '摘要')
+  assert.equal(message.role, 'user')
+  assert.equal(typeof message.id, 'string')
+  assert.ok(message.id.length > 0)
+  assert.deepEqual(message.content, [{ type: 'text', text: '正文' }])
+  assert.equal(message.source.kind, 'dsh-deveco-debug')
+  assert.equal(message.source.form, 'notice')
+  assert.equal(message.source.summary, '摘要')
+
+  const long = createDebugNoticeMessage('正文', 'x'.repeat(300))
+  assert.equal(long.source.summary.length, 120)
+  assert.ok(long.source.summary.endsWith('…'))
+})
+
+test('a breakpoint pause notifies the owning agent exactly once', () => {
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555, bundleName: 'com.example.app', device: 'emulator-5554' })
+  const notices = []
+  const host = { notifyAgent: (payload) => { notices.push(payload); return Promise.resolve(true) } }
+  installPauseNotifier(session, host)
+  session.ownerAgent = { id: 'session-1' }
+
+  session._handleEvent('Debugger.paused', {
+    reason: 'break',
+    hitBreakpoints: ['id:41:0:entry|com.example|1.0.0|src/main/ets/pages/Index.ets'],
+    callFrames: [{ callFrameId: '1', functionName: 'onPageShow', url: 'entry|com.example|1.0.0|src/main/ets/pages/Index.ets', location: { lineNumber: 41, columnNumber: 0, scriptId: '7' } }],
+  })
+
+  assert.equal(notices.length, 1)
+  assert.equal(notices[0].agent.id, 'session-1')
+  assert.match(notices[0].text, /Index\.ets:42/)
+  assert.match(notices[0].summary, /已暂停/)
+})
+
+test('a pause the tool reports inline is never pushed to the agent', () => {
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555, bundleName: 'com.example.app' })
+  const notices = []
+  const host = { notifyAgent: (payload) => { notices.push(payload); return Promise.resolve(true) } }
+  installPauseNotifier(session, host)
+  session.ownerAgent = { id: 'session-1' }
+
+  session.noteExpectedPause(8000)
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 0)
+
+  // 期望过期之后，真正的暂停仍然要通知
+  session.noteExpectedPause(-1)
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 1)
+
+  session.clearExpectedPauses()
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 2)
+})
+
+test('pauses are not pushed when the session has no owner or notifications are off', () => {
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555 })
+  const notices = []
+  const host = { notifyAgent: (payload) => { notices.push(payload); return Promise.resolve(true) } }
+  installPauseNotifier(session, host)
+
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 0)
+
+  session.ownerAgent = { id: 'session-1' }
+  session.notifyEnabled = false
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 0)
+
+  session.notifyEnabled = true
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 1)
+})
+
+test('a failing notice delivery never breaks the debugger session', () => {
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555 })
+  const host = { notifyAgent: () => { throw new Error('boom') } }
+  installPauseNotifier(session, host)
+  session.ownerAgent = { id: 'session-1' }
+  assert.doesNotThrow(() => session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] }))
+})
+
+test('a debugger notice wakes an idle agent but never interrupts a busy one', () => {
+  assert.equal(decideDebugNoticeDelivery({ agentStatus: 'idle', wakeCount: 0, maxWakes: 3 }), 'wake')
+  assert.equal(decideDebugNoticeDelivery({ agentStatus: 'running', wakeCount: 0, maxWakes: 3 }), 'queue')
+  // 连续唤醒预算用尽后只入队，不再新开一轮
+  assert.equal(decideDebugNoticeDelivery({ agentStatus: 'idle', wakeCount: 3, maxWakes: 3 }), 'queue')
+  assert.equal(decideDebugNoticeDelivery({ agentStatus: 'idle', wakeCount: 2, maxWakes: 3 }), 'wake')
+  // 缺省值：空闲 agent、有预算 → 唤醒
+  assert.equal(decideDebugNoticeDelivery(), 'wake')
+})
+
+test('the Host wakes an idle agent when the app stops at a breakpoint', async () => {
+  const { HarmonyDevEcoService } = await import('../index.js')
+  const calls = []
+  const agent = {
+    id: 'session-1',
+    status: 'idle',
+    followup (message) { calls.push(['followup', message]) },
+    inject (message) { calls.push(['inject', message]) },
+  }
+  const service = Object.create(HarmonyDevEcoService.prototype)
+  service._ctx = {
+    get: (name) => (name === 'agents' ? { get: (id) => (id === 'session-1' ? agent : undefined) } : undefined),
+  }
+  service._debugWakeCounts = new Map()
+
+  const delivered = await service._notifyDebugAgent({ agent, text: '正文', summary: '摘要' })
+  assert.equal(delivered, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], 'followup')
+  assert.equal(calls[0][1].role, 'user')
+  assert.equal(calls[0][1].source.kind, 'dsh-deveco-debug')
+  assert.equal(calls[0][1].source.form, 'notice')
+  assert.equal(calls[0][1].content[0].text, '正文')
+})
+
+test('a busy agent only gets the notice queued, and the wake budget stops the loop', async () => {
+  const { HarmonyDevEcoService } = await import('../index.js')
+  const calls = []
+  const agent = {
+    id: 'session-2',
+    status: 'running',
+    followup (message) { calls.push(['followup', message]) },
+    inject (message) { calls.push(['inject', message]) },
+  }
+  const service = Object.create(HarmonyDevEcoService.prototype)
+  service._ctx = {
+    get: (name) => (name === 'agents' ? { get: (id) => (id === 'session-2' ? agent : undefined) } : undefined),
+  }
+  service._debugWakeCounts = new Map()
+
+  await service._notifyDebugAgent({ agent, text: 'a', summary: 'a' })
+  assert.deepEqual(calls.map((c) => c[0]), ['inject'])
+
+  // 空闲 agent：连续 3 次唤醒后预算耗尽 → 只入队
+  agent.status = 'idle'
+  calls.length = 0
+  await service._notifyDebugAgent({ agent, text: 'b', summary: 'b' })
+  await service._notifyDebugAgent({ agent, text: 'b', summary: 'b' })
+  await service._notifyDebugAgent({ agent, text: 'b', summary: 'b' })
+  assert.deepEqual(calls.map((c) => c[0]), ['followup', 'followup', 'followup'])
+  calls.length = 0
+  await service._notifyDebugAgent({ agent, text: 'b', summary: 'b' })
+  assert.deepEqual(calls.map((c) => c[0]), ['inject'])
+
+  // agent 又用了调试器 → 预算清零
+  service._noteDebugAgentActivity(agent)
+  calls.length = 0
+  await service._notifyDebugAgent({ agent, text: 'b', summary: 'b' })
+  assert.deepEqual(calls.map((c) => c[0]), ['followup'])
+
+  // 会话已销毁 → 静默丢弃
+  const gone = Object.create(HarmonyDevEcoService.prototype)
+  gone._ctx = { get: () => undefined }
+  gone._debugWakeCounts = new Map()
+  assert.equal(await gone._notifyDebugAgent({ agent, text: 'x', summary: 'x' }), false)
+})
+
+test('module-init pauses ("Break on start") are never pushed to the agent', () => {
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555, bundleName: 'com.example.app' })
+  const notices = []
+  const host = { notifyAgent: (payload) => { notices.push(payload); return Promise.resolve(true) } }
+  installPauseNotifier(session, host)
+  session.ownerAgent = { id: 'session-1' }
+
+  // 入口模块的初始化暂停（attach 已经内联回报过）
+  session._handleEvent('Debugger.paused', { reason: 'Break on start', callFrames: [] })
+  // 库模块（hrouter 等）的初始化暂停——真机实测每个加载的模块都会来一次
+  session._handleEvent('Debugger.paused', { reason: 'Break on start', callFrames: [] })
+  assert.equal(notices.length, 0)
+
+  // 真正的断点命中仍然要通知
+  session._handleEvent('Debugger.paused', { reason: 'break', hitBreakpoints: ['id:41:0:entry|com.example|1.0.0|src/main/ets/pages/Index.ets'], callFrames: [] })
+  assert.equal(notices.length, 1)
+})
+
+test('a reason-scoped expectation does not swallow a real breakpoint hit', () => {
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555 })
+  const notices = []
+  const host = { notifyAgent: (payload) => { notices.push(payload); return Promise.resolve(true) } }
+  installPauseNotifier(session, host)
+  session.ownerAgent = { id: 'session-1' }
+
+  // attach 的入口期望只针对启动类原因
+  session.noteExpectedPause(15000, { reasons: ['Break on start'] })
+  // 断点命中（原因不匹配）必须照常通知
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 1)
+
+  // 启动类暂停会消费这条期望
+  session._handleEvent('Debugger.paused', { reason: 'Break on start', callFrames: [] })
+  assert.equal(notices.length, 1)
+})
+
+test('a pause the tool already reported inline is not pushed again', () => {
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555 })
+  const notices = []
+  const host = { notifyAgent: (payload) => { notices.push(payload); return Promise.resolve(true) } }
+  installPauseNotifier(session, host)
+  session.ownerAgent = { id: 'session-1' }
+
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 1)
+
+  // 工具结果内联回报了这一次的暂停
+  session.markPauseReportedInline()
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, 2) // 新的一次暂停（新的快照）仍然要通知
+
+  // 标记只作用于当次快照：重复处理同一个快照不再推
+  const snapshot = session.paused
+  session.markPauseReportedInline()
+  session.paused = snapshot
+  const before = notices.length
+  session._handleEvent('Debugger.paused', { reason: 'break', callFrames: [] })
+  assert.equal(notices.length, before + 1)
+})
+
+test('startup pauses can be skipped and re-enabled on demand', async () => {
+  const sent = []
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555 })
+  session.request = async (method, params) => {
+    sent.push({ method, params })
+    if (method === 'Runtime.enable') return { ok: true, value: {} }
+    if (method === 'Debugger.enable') return { ok: true, value: { protocols: [] } }
+    return { ok: true, value: {} }
+  }
+
+  // attach 默认跳过启动期暂停（ArkVM 每个新脚本都会 Break on start）
+  const ini = await session.init({ runIfWaiting: true })
+  assert.equal(ini.ok, true)
+  assert.equal(session.skipPauses, true)
+  const skipCall = sent.find((c) => c.method === 'Debugger.setSkipAllPauses')
+  assert.ok(skipCall, 'init 必须下发 setSkipAllPauses')
+  assert.equal(skipCall.params.skip, true)
+  // 必须在放行应用之前下发，否则第一个脚本的启动暂停已经发生
+  const skipIndex = sent.findIndex((c) => c.method === 'Debugger.setSkipAllPauses')
+  const runIndex = sent.findIndex((c) => c.method === 'Runtime.runIfWaitingForDebugger')
+  assert.ok(skipIndex < runIndex, 'setSkipAllPauses 要早于 runIfWaitingForDebugger')
+
+  // 设断点前必须把跳过关掉，否则断点不会命中
+  await session.ensurePausesEnabled()
+  assert.equal(session.skipPauses, false)
+  const off = sent.filter((c) => c.method === 'Debugger.setSkipAllPauses').pop()
+  assert.equal(off.params.skip, false)
+
+  // 已经关掉时不要重复下发
+  const before = sent.length
+  await session.ensurePausesEnabled()
+  assert.equal(sent.length, before)
+
+  // 显式开关
+  await session.setSkipAllPauses(true)
+  assert.equal(session.skipPauses, true)
+  await session.setSkipAllPauses(false)
+  assert.equal(session.skipPauses, false)
+})
+
+test('a breakpoint hit reports the ArkVM reason "other" as a breakpoint', () => {
+  const withHit = formatPauseNotification({
+    bundleName: 'com.example.app',
+    paused: {
+      reason: 'other',
+      hitBreakpoints: ['id:340:0:entry|entry|1.0.0|src/main/ets/pages/Index.ts'],
+      frames: [{ url: 'entry|entry|1.0.0|src/main/ets/pages/Index.ts', lineNumber: 340, functionName: 'onCreateSession' }],
+    },
+  })
+  assert.match(withHit.text, /断点命中/)
+  assert.match(withHit.text, /命中断点：id:340:0/)
+  assert.match(withHit.summary, /命中断点/)
+
+  // 没有命中断点时保留原始 reason
+  const plain = formatPauseNotification({
+    bundleName: 'com.example.app',
+    paused: { reason: 'other', hitBreakpoints: [], frames: [] },
+  })
+  assert.match(plain.text, /暂停原因：other/)
+})
+
+test('the shared pause reason label translates the ArkVM "other" reason', () => {
+  assert.equal(describePauseReason({ reason: 'other', hitBreakpoints: ['id:1:0:x'] }), '断点命中')
+  assert.equal(describePauseReason({ reason: 'other', hitBreakpoints: [] }), 'other')
+  assert.equal(describePauseReason({ reason: 'exception' }), 'exception')
+  assert.equal(describePauseReason(null), 'break')
 })

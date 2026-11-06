@@ -22,7 +22,7 @@
  */
 
 import net from 'node:net'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import {
   buildDevEcoWsHandshake,
   isWsHandshakeAccepted,
@@ -104,6 +104,192 @@ export function formatCallFrameLines (frames) {
 }
 
 /**
+ * Shorten one script url to its file name for one-line summaries.
+ *
+ * ArkTS script urls look like `entry|<pkg>|<version>|src/main/ets/pages/Index.ets`;
+ * the last segment after `|` is the project-relative path, and its file name
+ * is what a human wants to read in a notification title.
+ *
+ * @param {string} url
+ * @returns {string}
+ */
+export function shortScriptUrl (url) {
+  if (typeof url !== 'string' || url.length === 0) return ''
+  const tail = url.split('|').pop() || url
+  const parts = tail.split('/').filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1] : tail
+}
+
+/**
+ * Normalize call frames for one-line rendering.
+ *
+ * The session stores summarized frames (`{index, functionName, url,
+ * lineNumber, …}`), but the raw `Debugger.paused` payload carries the CDP
+ * shape (`{functionName, url, location:{lineNumber, …}}`). Both must render
+ * the same way, so the notification path accepts either.
+ *
+ * @param {Array<object>} frames
+ * @returns {Array<object>}
+ */
+export function normalizeCallFrames (frames) {
+  if (!Array.isArray(frames)) return []
+  return frames.map((frame, index) => {
+    const source = frame && typeof frame === 'object' ? frame : {}
+    const location = source.location && typeof source.location === 'object' ? source.location : {}
+    const line = Number(source.lineNumber)
+    const lineNumber = Number.isFinite(line)
+      ? line
+      : (Number.isFinite(Number(location.lineNumber)) ? Number(location.lineNumber) : -1)
+    const column = Number(source.columnNumber)
+    return {
+      index: Number.isFinite(Number(source.index)) ? Number(source.index) : index,
+      functionName: typeof source.functionName === 'string' ? source.functionName : '',
+      url: typeof source.url === 'string' ? source.url : '',
+      lineNumber,
+      columnNumber: Number.isFinite(column) ? column : (Number.isFinite(Number(location.columnNumber)) ? Number(location.columnNumber) : 0),
+      scriptId: source.scriptId !== undefined
+        ? String(source.scriptId)
+        : (location.scriptId !== undefined ? String(location.scriptId) : ''),
+    }
+  })
+}
+
+/**
+ * Pause reasons that mean "the runtime is initializing a module", not "the
+ * agent's breakpoint was hit".
+ *
+ * The ArkVM emits a "Break on start" pause for **every module** it loads —
+ * the entry module, then each imported HAR/HSP library (observed on a real
+ * device: `hrouter|hrouter|2.0.0|src/main/ets/api/ModuleLoader.ts`). Those
+ * are startup noise: the first one is already reported inline by the attach
+ * result, and the rest are not the agent's business. A real breakpoint hit
+ * reports `break`, an exception reports `exception`.
+ *
+ * @type {string[]}
+ */
+export const STARTUP_PAUSE_REASONS = ['break on start', 'on start', 'on entry', 'entry', 'startup']
+
+/**
+ * @param {string} reason a runtime pause reason
+ * @returns {boolean} true when the pause is module-initialization noise
+ */
+export function isStartupPause (reason) {
+  const key = String(reason === undefined || reason === null ? '' : reason).trim().toLowerCase()
+  if (!key) return false
+  return STARTUP_PAUSE_REASONS.includes(key)
+}
+
+/**
+ * Model-facing notification for one app-side pause.
+ *
+ * The debugger stops the app for reasons the agent cannot see (a breakpoint
+ * hit, an exception pause, an external pause). This is the text the Host
+ * delivers into the owning agent's inbox so the agent learns *where* the app
+ * stopped instead of polling `action=status`.
+ *
+ * @param {object} opts
+ * @param {string} [opts.bundleName]
+ * @param {number} [opts.pid]
+ * @param {string} [opts.device]
+ * @param {object|null} [opts.paused] the session's `paused` snapshot
+ * @returns {{ text: string, summary: string }}
+ */
+/**
+ * Human label for one pause.
+ *
+ * The ArkVM reports a breakpoint hit as `reason: "other"` (not `"break"`) —
+ * measured 2026-11-07 on the emulator:
+ * `paused reason=other @ entry|entry|1.0.0|src/main/ets/pages/Index.ts:341`.
+ * When the pause also carries hit breakpoints, that is a breakpoint hit and
+ * gets a readable label; anything else keeps the runtime's own reason.
+ *
+ * @param {object|null} paused
+ * @returns {string}
+ */
+export function describePauseReason (paused) {
+  const raw = paused && typeof paused.reason === 'string' && paused.reason ? paused.reason : 'break'
+  const hits = paused && Array.isArray(paused.hitBreakpoints) ? paused.hitBreakpoints.filter(Boolean) : []
+  return hits.length > 0 && raw === 'other' ? '断点命中' : raw
+}
+
+export function formatPauseNotification ({ bundleName = '', pid = 0, device = '', paused = null } = {}) {
+  const frames = normalizeCallFrames(paused && paused.frames)
+  const rawReason = (paused && typeof paused.reason === 'string' && paused.reason) || 'break'
+  const hits = paused && Array.isArray(paused.hitBreakpoints) ? paused.hitBreakpoints.filter(Boolean) : []
+  // ArkVM 命中断点时报的 reason 是 `other`（不是 `break`）——实测 2026-11-07
+  // 模拟器：`paused reason=other @ entry|entry|1.0.0|src/main/ets/pages/Index.ts:341`。
+  // 有命中断点就翻译成人话，别把 `other` 甩给 agent。
+  const reason = describePauseReason(paused)
+  const top = frames[0]
+  const location = top && top.url
+    ? `${top.url}:${(Number(top.lineNumber) || 0) + 1}`
+    : '未知位置'
+  const app = bundleName || '目标应用'
+  const where = top && top.url ? `${shortScriptUrl(top.url)}:${(Number(top.lineNumber) || 0) + 1}` : '未知位置'
+  const summary = `HarmonyOS 调试：${app} ${reason === '断点命中' ? '命中断点' : '已暂停'}于 ${where}`
+  const lines = [
+    `【HarmonyOS 调试通知】${app}${pid ? ` (pid ${pid})` : ''}${device ? ` @ ${device}` : ''} ${reason === '断点命中' ? '命中断点' : '已暂停'}。`,
+    `暂停原因：${reason}${hits.length > 0 ? `（命中断点：${hits.join(', ')}）` : ''}`,
+    `暂停位置：${location}`,
+  ]
+  if (frames.length > 0) {
+    lines.push('调用栈：')
+    lines.push(...formatCallFrameLines(frames).slice(0, 8))
+  }
+  lines.push('下一步：harmony_debug(action=stack) 取完整调用栈；action=evaluate 求值；action=step 单步（over/into/out）；action=resume 继续运行；action=remove_breakpoint 删除断点。')
+  return { text: lines.join('\n'), summary }
+}
+
+/**
+ * Decide how one debugger notice reaches the owning agent.
+ *
+ * `wake` starts a new turn (the agent was idle and still has wake budget),
+ * `queue` only enqueues the notice for the agent's next step. The rules
+ * mirror the harness' own background-job notification: an idle agent is
+ * woken, a busy agent is not interrupted, and a debugger that keeps hitting
+ * the same breakpoint cannot wake the agent forever.
+ *
+ * @param {object} opts
+ * @param {string} [opts.agentStatus] the live agent status (`idle`/`running`)
+ * @param {number} [opts.wakeCount] consecutive wakes already spent
+ * @param {number} [opts.maxWakes] wake budget
+ * @returns {'wake'|'queue'}
+ */
+export function decideDebugNoticeDelivery ({ agentStatus = 'idle', wakeCount = 0, maxWakes = 3 } = {}) {
+  if (agentStatus !== 'idle') return 'queue'
+  if (wakeCount >= maxWakes) return 'queue'
+  return 'wake'
+}
+
+/**
+ * One model-facing notice message for the owning agent's inbox.
+ *
+ * The shape mirrors `@deepseek-ai/dsh-llm`'s `createUserMessage` (that package
+ * is not a dependency of this plugin, so the three fields are built here):
+ * a fresh uuid identity, the `user` role, one text block, and a
+ * producer-owned source. `form: 'notice'` gives the client a one-line
+ * account; the source kind is this plugin's own — the harness message-source
+ * union is merge-extensible and consumers fall through unknown kinds.
+ *
+ * @param {string} text model-facing body
+ * @param {string} summary one-line account (bounded to 120 chars)
+ */
+export function createDebugNoticeMessage (text, summary) {
+  const body = String(text == null ? '' : text)
+  const oneLine = String(summary == null ? '' : summary)
+  return {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: body }],
+    source: {
+      kind: 'dsh-deveco-debug',
+      form: 'notice',
+      summary: oneLine.length <= 120 ? oneLine : `${oneLine.slice(0, 119)}…`,
+    },
+  }
+}
+
+/**
  * Ask the OS for an unused loopback port (the debugger forward needs a local
  * TCP port; hdc cannot choose one for us).
  *
@@ -162,6 +348,75 @@ export class ArktsDebuggerSession {
     /** @type {string[]} */
     this.consoleMessages = []
     this.lastError = ''
+    /**
+     * Expiry timestamps of pauses the caller reports inline (attach entry
+     * pause, an explicit `pause`, a `step`). A pause matching one of them is
+     * NOT pushed to the agent — the tool result already carries it.
+     * @type {{expiresAt: number, reasons: string[]|null}[]}
+     */
+    this.expectedPauses = []
+    /** @type {object|null} the Agent that owns this session (Host layer sets it). */
+    this.ownerAgent = null
+    /** @type {string} owner session id (the Agent id is the Session id). */
+    this.ownerSessionId = ''
+    /** Whether a pause should be pushed to the owning agent. */
+    this.notifyEnabled = true
+    /** Whether the runtime currently skips all pauses (startup fast-forward). */
+    this.skipPauses = false
+  }
+
+  /**
+   * Announce that the next pause is reported inline by the caller.
+   * @param {number} [ttlMs] how long the expectation stays valid
+   * @param {{reasons?: string[]}} [options] `reasons` restricts the
+   *   expectation to those pause reasons (case-insensitive); omitted means
+   *   "any pause". A reason-specific expectation is matched first, so an
+   *   attach-time entry expectation never swallows a real breakpoint hit.
+   */
+  noteExpectedPause (ttlMs = 8000, options = {}) {
+    const reasons = Array.isArray(options.reasons) && options.reasons.length > 0
+      ? options.reasons.map((reason) => String(reason).toLowerCase())
+      : null
+    this.expectedPauses.push({ expiresAt: Date.now() + ttlMs, reasons })
+    if (this.expectedPauses.length > 8) this.expectedPauses.splice(0, this.expectedPauses.length - 8)
+  }
+
+  /**
+   * Claim one expected pause.
+   * @param {string} [reason] the pause reason reported by the runtime
+   * @returns {boolean} true when this pause is already reported inline
+   */
+  consumeExpectedPause (reason) {
+    const now = Date.now()
+    this.expectedPauses = this.expectedPauses.filter((entry) => entry.expiresAt > now)
+    if (this.expectedPauses.length === 0) return false
+    const key = String(reason === undefined || reason === null ? '' : reason).trim().toLowerCase()
+    let index = -1
+    if (key) {
+      index = this.expectedPauses.findIndex((entry) => Array.isArray(entry.reasons)
+        && entry.reasons.some((expected) => String(expected).toLowerCase() === key))
+    }
+    if (index < 0) {
+      index = this.expectedPauses.findIndex((entry) => !Array.isArray(entry.reasons) || entry.reasons.length === 0)
+    }
+    if (index < 0) return false
+    this.expectedPauses.splice(index, 1)
+    return true
+  }
+
+  /** Forget every expected pause (used when a caller gives up waiting). */
+  clearExpectedPauses () {
+    this.expectedPauses = []
+  }
+
+  /**
+   * Mark the current pause snapshot as "already reported inline by a tool
+   * result". The snapshot object is replaced on every `Debugger.paused`, so
+   * this flags exactly one stop — the notifier then never pushes a pause the
+   * agent has already seen in a tool result.
+   */
+  markPauseReportedInline () {
+    if (this.paused && typeof this.paused === 'object') this.paused.reportedInline = true
   }
 
   /** @returns {Promise<void>} resolves once the 101 handshake completes. */
@@ -356,12 +611,52 @@ export class ArktsDebuggerSession {
       : []
     this.protocols = capabilities
     await this.request('Debugger.setBreakpointsActive', { active: true })
+    // 启动期跳过暂停（默认开）：ArkVM 对**每一个新加载的脚本**都发一次
+    // `Debugger.paused(reason="Break on start")`——不跳过的话 app 会卡在启动页，
+    // agent 要 resume N 次才能让它跑起来（实测 55 个脚本 = 55 次）。
+    // `Debugger.setSkipAllPaues` 实测可用（回 {}），必须在 runIfWaitingForDebugger
+    // **之前**下发，否则第一个脚本的启动暂停已经发生。
+    if (opts.skipPauses !== false) {
+      const skipped = await this.request('Debugger.setSkipAllPauses', { skip: true })
+      this.skipPauses = skipped.ok
+    } else {
+      // 这个开关是**进程级**状态：上一次会话开过 skip，同一个 app 再 attach
+      // 就会一直不暂停——所以「不跳过」必须显式下发一次 skip:false。
+      await this.request('Debugger.setSkipAllPauses', { skip: false })
+      this.skipPauses = false
+    }
     if (opts.runIfWaiting !== false) {
       await this.request('Runtime.runIfWaitingForDebugger', {})
     }
     // Give the runtime a moment to emit scriptParsed / the entry pause.
     await new Promise((resolve) => setTimeout(resolve, 300))
-    return { ok: true, value: { protocols: capabilities } }
+    return { ok: true, value: { protocols: capabilities, skipPauses: this.skipPauses } }
+  }
+
+  /**
+   * 关掉「跳过暂停」，让断点/单步/显式暂停重新生效。
+   *
+   * ArkVM 的 `setSkipAllPauses` 是全局开关：跳过期间断点**不会**命中，
+   * 所以任何要「停下来」的动作（设断点、pause、step）之前都要先调用它。
+   *
+   * @returns {Promise<boolean>} true 表示已确认关掉
+   */
+  async ensurePausesEnabled () {
+    if (!this.skipPauses) return true
+    const reply = await this.request('Debugger.setSkipAllPauses', { skip: false })
+    this.skipPauses = !reply.ok
+    return reply.ok
+  }
+
+  /**
+   * 显式开关「跳过暂停」。
+   * @param {boolean} skip true=跳过所有暂停（启动期用），false=正常打断
+   * @returns {Promise<{ok: boolean, error?: object}>}
+   */
+  async setSkipAllPauses (skip) {
+    const reply = await this.request('Debugger.setSkipAllPauses', { skip: !!skip })
+    this.skipPauses = !!skip && reply.ok
+    return reply
   }
 
   /**

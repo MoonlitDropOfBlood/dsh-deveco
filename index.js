@@ -90,7 +90,15 @@ import {
   readPngSize,
 } from "./harmony-device.mjs";
 import { buildHarmonyAgentTools } from "./harmony-agent-tools.mjs";
-import { buildDebuggerForwardRemoveArgs } from "./harmony-debugger.mjs";
+import { buildDebuggerForwardRemoveArgs, createDebugNoticeMessage, decideDebugNoticeDelivery } from "./harmony-debugger.mjs";
+
+/**
+ * How many consecutive debugger wakes one agent may get before the notices
+ * are only queued into its next step. A breakpoint hit in a loop would
+ * otherwise wake the agent forever; the budget resets as soon as the human
+ * speaks again.
+ */
+const DEBUG_MAX_CONSECUTIVE_WAKES = 3;
 
 /**
  * Mark one instance method as a Remote export without relying on decorator
@@ -436,6 +444,8 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     this._streams = new Map();
     /** pid → ArktsDebuggerSession（ArkTS 运行时调试会话，单 pid 单客户端） */
     this._debugSessions = new Map();
+    /** agent session id → 已消耗的连续「断点唤醒」次数（人类发言或 agent 再用调试器后清零） */
+    this._debugWakeCounts = new Map();
     this._discovery = null;
     /** In-memory copy of the persisted config, loaded in [Service.init](). */
     this._config = { schemaVersion: 1, studioPath: "", cltPath: "", updatedAt: 0 };
@@ -497,6 +507,8 @@ export class HarmonyDevEcoService extends TypertRemoteService {
               sessions: this._debugSessions,
               hdc: (argv, timeoutMs) => this._hdcRun(argv, timeoutMs),
               shell: (command, device, timeoutMs) => this._deviceShell(command, device, timeoutMs),
+              notifyAgent: (payload) => this._notifyDebugAgent(payload),
+              noteAgentActivity: (agent) => this._noteDebugAgentActivity(agent),
             };
             for (const tool of buildHarmonyAgentTools({ defineTool, host })) {
               register(tool, tool && tool.name);
@@ -512,6 +524,19 @@ export class HarmonyDevEcoService extends TypertRemoteService {
         });
       }
     } catch (_) { /* dsh-tools 不可用：仅 UI/Remote 面 */ }
+
+    // A debugger notice may wake an idle agent. Cap the consecutive wakes so a
+    // breakpoint hit in a loop cannot spin the agent forever; the budget is
+    // refilled as soon as the human speaks again.
+    try {
+      this._ctx.on("agent/inbox/claimed", (payload) => {
+        const claimed = payload || {};
+        if (!claimed.agent || !claimed.message) return;
+        const source = claimed.message.source;
+        if (!source || source.kind !== "user") return;
+        this._noteDebugAgentActivity(claimed.agent);
+      });
+    } catch (_) { /* the event is optional — without it every wake counts */ }
 
     // Ensure the data directory exists, load the persisted config, then warm
     // the discovery cache.
@@ -615,6 +640,81 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       + "请在设置 → HarmonyOS Suite 配置 DevEco Studio 或 Command Line Tools 路径。"
       + (msg ? ` 当前状态：${msg}` : "")
     );
+  }
+
+  /**
+   * Deliver one debugger notice to the agent that owns the debug session.
+   *
+   * The app can stop at a breakpoint without the agent asking for it, so the
+   * agent would otherwise have to poll `harmony_debug(action=status)` to
+   * notice the stop. The delivery rules mirror the harness' own background
+   * job notification (@deepseek-ai/dsh-tool-jobs): an idle agent is woken
+   * with `followup` (the notice opens a new turn), a busy agent gets the
+   * notice queued into its next step with `inject` (no extra wake).
+   *
+   * A notice never breaks the debugger: every failure is contained here.
+   *
+   * @param {{ agent: object, text: string, summary: string }} payload
+   * @returns {Promise<boolean>} whether the notice was delivered
+   */
+  async _notifyDebugAgent(payload) {
+    try {
+      const agent = payload && payload.agent;
+      if (!agent || agent.id === undefined) return false;
+      const registry = typeof this._ctx.get === "function" ? this._ctx.get("agents") : null;
+      const owner = registry && typeof registry.get === "function" ? registry.get(agent.id) : null;
+      if (!owner) return false;
+      const message = createDebugNoticeMessage(payload.text, payload.summary);
+      const delivery = decideDebugNoticeDelivery({
+        agentStatus: owner.status,
+        wakeCount: this._debugWakeCount(owner),
+        maxWakes: DEBUG_MAX_CONSECUTIVE_WAKES,
+      });
+      if (delivery === "wake") {
+        this._bumpDebugWakeCount(owner);
+        owner.followup(message);
+        return true;
+      }
+      owner.inject(message);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Consecutive debugger wakes already spent for one agent.
+   * Keyed by session id (the agent id), not by object identity: the tool
+   * hands over the agent it was called with, the registry hands over the
+   * live one, and only the id is guaranteed to match.
+   */
+  _debugWakeCount(owner) {
+    const key = this._debugWakeKey(owner);
+    return key ? (this._debugWakeCounts.get(key) || 0) : 0;
+  }
+
+  /** Record one more consecutive debugger wake for one agent. */
+  _bumpDebugWakeCount(owner) {
+    const key = this._debugWakeKey(owner);
+    if (!key) return;
+    this._debugWakeCounts.set(key, this._debugWakeCount(owner) + 1);
+  }
+
+  /**
+   * Refill the wake budget of one agent: it either used the debugger again or
+   * the human spoke — either way it may be woken by the next breakpoint.
+   * @param {object} owner
+   */
+  _noteDebugAgentActivity(owner) {
+    const key = this._debugWakeKey(owner);
+    if (!key) return;
+    this._debugWakeCounts.delete(key);
+  }
+
+  /** Stable budget key of one agent (its session id). */
+  _debugWakeKey(owner) {
+    if (!owner || owner.id === undefined || owner.id === null) return "";
+    return String(owner.id);
   }
 
   /** `-t <serial>` prefix for hdc target scoping. */

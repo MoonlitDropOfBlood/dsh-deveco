@@ -29,7 +29,7 @@
 
 ### Agent 工具（对话内可调用）
 - **`harmony_ui_tree`**：把 DevEco 调试源取树注册为 DSH 的 agent 工具（`ctx.tools`），对话里的 agent 可直接调用，返回**缩进树文本**（或 `format=json` 完整节点）——节点含组件名、bounds、文本与 **padding/margin/border 声明值**；JSON 中每个节点带裁剪前原始直接子节点数 `childCount`（裁剪为叶子也不归零）。Swiper 在 `displayCount` 未配置或 ≤1 时只完整展开 `currentIndex` 页，其他页保留一层（`TabContent` 两层），`displayCount>1` 时不裁剪。支持 `device` / `pid` / `package_name` 定位目标、`include_attrs` 附带全部原始属性、`max_nodes` 截断保护。前置条件同 DevEco 调试源（debug 应用、DevEco Inspector 面板未占用）。
-- **`harmony_debug`**：**ArkTS 运行时调试器**（与 DevEco Studio 同款通道：`hdc fport ark:<pid>@Debugger` + 裸 socket WebSocket + CDP 风格 JSON-RPC）。动作：`attach`（`launch=true` 走已验证的 wait-for-debugger 流程：`aa appdebug` → force-stop → `aa start` → fport → 握手 → `Runtime.runIfWaitingForDebugger`）、`status` / `scripts`（已加载脚本 url，断点必须逐字匹配）、`set_breakpoint` / `remove_breakpoint` / `breakpoints`、`pause` / `resume` / `step`（over/into/out）、`run`、`stack`（调用栈）、`evaluate`（暂停帧求值——该 runtime 不支持 `Runtime.evaluate`）、`properties`（展开远程对象）、`exceptions`（none/uncaught/all）、`events`、`detach`。前置条件：应用必须是 **debug 签名**；同一 pid 同时只允许一个调试客户端（DevEco 调试会话开着时 attach 会连不上）。
+- **`harmony_debug`**：**ArkTS 运行时调试器**（与 DevEco Studio 同款通道：`hdc fport ark:<pid>@Debugger` + 裸 socket WebSocket + CDP 风格 JSON-RPC）。动作：`attach`（`launch=true` 走已验证的 wait-for-debugger 流程：`aa appdebug` → force-stop → `aa start` → fport → 握手 → `Runtime.runIfWaitingForDebugger`）、`status` / `scripts`（已加载脚本 url，断点必须逐字匹配）、`set_breakpoint` / `remove_breakpoint` / `breakpoints`、`pause` / `resume` / `step`（over/into/out）、`run`、`stack`（调用栈）、`evaluate`（暂停帧求值——该 runtime 不支持 `Runtime.evaluate`）、`properties`（展开远程对象）、`exceptions`（none/uncaught/all）、`events`、`notify`（开关自动通知）、`skip_pauses`（开关 runtime 的「跳过暂停」启动快进）、`detach`。**应用停在断点/异常暂停时，会话会自动收到一条通知**（暂停位置 + 调用栈 + 下一步建议），agent 不必轮询 `status`；自己触发的暂停（attach 入口暂停、`pause`、`step`）由工具结果内联回报，不会重复通知。**启动期默认跳过 ArkVM 的逐脚本暂停**（`Debugger.setSkipAllPauses`，实测 55 个脚本 = 55 次「Break on start」会让 app 卡在启动页）；设断点 / `pause` / `step` 会自动关掉它。断点行号用**编译产物**的行号（不是 .ets 源码行号）。前置条件：应用必须是 **debug 签名**；同一 pid 同时只允许一个调试客户端（DevEco 调试会话开着时 attach 会连不上）。
 
 > 日志与应用管理不另做工具——直接用官方 CLI：`devecocli log`（`--level/--keyword/--bundle-name/--tail/--format json/--follow`）与 `devecocli device app list|info|start|stop|install|uninstall`（`device app info --format json` 里含 `applicationInfo.appProvisionType`，即 debug 签名判定）。
 
@@ -100,7 +100,7 @@ dsh plugin --profile web add .
 
 ```bash
 npm run check    # 全部 JS 语法检查
-npm test         # 113 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析 + agent 工具命令构造与调试协议纯函数 + hdc 降级命令/解析）
+npm test         # 130 个独立核心单元测试（路径探测 + 配置互斥 + HiLog/ui 解析 + hdc IP 连接/空格路径 spawn/超时判定 + 盒子模型/contentBox/hitTest/PNG 尺寸 + 窗口/原始 dump/DevEco 调试树/裸 WS 握手/agent 工具投影/自定义组件/字体属性/devId 解析 + agent 工具命令构造与调试协议纯函数 + hdc 降级命令/解析 + 断点通知文案/投递决策/暂停抑制）
 
 # 真机 / 模拟器跑一遍 agent 调试工具（不依赖 DSH）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <你的 debug 包名> --attach
