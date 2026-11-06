@@ -104,7 +104,9 @@ jobs:
             - **.ets 文件查看器**：保持原有 ArkTS 语法高亮能力（方法/类型/装饰器/声明式 UI 组件着色，对标 DevEco Studio）
             - **没有 devecocli 也能用（v0.4.2 新增）**：devecocli 是独立 npm 包，未安装时设备列表 / HiLog / 截图 / 窗口列表 / Tap·Swipe·Text 自动降级到 SDK 自带的 `hdc`，不再报 `Command failed: .../bin/devecocli.cmd`；设置页徽章会显示「hdc 降级（未安装 devecocli）」
             - 设置页 → HarmonyOS Suite：DevEco Studio / Command Line Tools 路径管理（三平台自发现 + 互斥）+ 设备管理（USB / 网络 `hdc tconn`）
-            - 22 个 Remote 方法 · 113 个单元测试
+            - **断点命中自动通知 agent（v0.5.0 新增）**：应用停在断点时，会话会**自动收到**一条通知（暂停位置 + 命中断点 + 调用栈 + 下一步建议），不必再轮询 `status`；自己触发的暂停（attach 入口暂停、`pause`、`step`）由工具结果内联回报，不会重复通知
+            - **启动期不再把 app 卡在启动页（v0.5.0 新增）**：ArkVM 对每一个新加载的脚本都会发一次「Break on start」（实测 55 个脚本 = 55 次），插件现在会在启动期**跳过这些暂停**，应用一次跑完；设断点 / `pause` / `step` 会自动恢复打断能力
+            - 22 个 Remote 方法 · 130 个单元测试
 
             ### 📦 安装
             ```bash
