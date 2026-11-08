@@ -100,13 +100,14 @@ jobs:
             - 官方右侧边栏两个 Tab：**HiLog 检查器**（实时流 + 级别过滤 + **包名/关键词实时视图过滤**——流跑着随时改随时生效、清空即回溯；包名自动解析为 pid 集合（含 `:render` 等后缀进程）；**Ctrl+F 日志内查找**：全部命中高亮 + 计数 + Enter 逐个跳转）、**ArkUI Inspector**（Chrome Elements 风格：截图点选高亮 + 可折叠组件树 + **树搜索**（组件名/id/类型/文本，命中行+祖先链、`<mark>` 高亮、Enter 逐个跳转）+ 节点属性搜索 + 盒子模型）
             - **两套 UI 树源**：DevEco 调试源（反编译复刻 DevEco Studio 同款 `ark:<pid>@<pkg>` 调试链路，**唯一带 padding/margin/border 声明值与自定义组件名**）/ uitest 无障碍树（适合已发布应用）
             - **`harmony_ui_tree` agent 工具**（`ctx.tools`）：对话里的 agent 直接取 ArkUI 组件树
-            - **`harmony_debug` agent 工具**（新增）：DevEco Studio 同款 ArkTS 运行时调试通道，支持 attach / 断点 / 暂停 / 单步 / 调用栈 / 暂停帧求值；日志与应用管理继续使用官方 `devecocli`
+            - **`harmony_project` agent 工具（v0.6.0 新增）**：真实 HarmonyOS 工程模型，解析 JSON5 配置、应用/模块/Ability/权限/依赖/产物；签名材料脱敏，`listProjects` 不再固定返回空列表
+            - **`harmony_debug` agent 工具**：DevEco Studio 同款 ArkTS 运行时调试通道，支持 attach / 断点 / 暂停 / 单步 / 调用栈 / 暂停帧求值；**v0.6.0 新增真实 Hvigor Source Map 驱动的 `.ets` 源码断点与源码调用栈/通知**，带过期映射保护，同时保留编译 URL 断点；日志与应用管理继续使用官方 `devecocli`
             - **.ets 文件查看器**：保持原有 ArkTS 语法高亮能力（方法/类型/装饰器/声明式 UI 组件着色，对标 DevEco Studio）
             - **没有 devecocli 也能用（v0.4.2 新增）**：devecocli 是独立 npm 包，未安装时设备列表 / HiLog / 截图 / 窗口列表 / Tap·Swipe·Text 自动降级到 SDK 自带的 `hdc`，不再报 `Command failed: .../bin/devecocli.cmd`；设置页徽章会显示「hdc 降级（未安装 devecocli）」
             - 设置页 → HarmonyOS Suite：DevEco Studio / Command Line Tools 路径管理（三平台自发现 + 互斥）+ 设备管理（USB / 网络 `hdc tconn`）
             - **断点命中自动通知 agent（v0.5.0 新增）**：应用停在断点时，会话会**自动收到**一条通知（暂停位置 + 命中断点 + 调用栈 + 下一步建议），不必再轮询 `status`；自己触发的暂停（attach 入口暂停、`pause`、`step`）由工具结果内联回报，不会重复通知
             - **启动期不再把 app 卡在启动页（v0.5.0 新增）**：ArkVM 对每一个新加载的脚本都会发一次「Break on start」（实测 55 个脚本 = 55 次），插件现在会在启动期**跳过这些暂停**，应用一次跑完；设断点 / `pause` / `step` 会自动恢复打断能力
-            - 22 个 Remote 方法 · 130 个单元测试
+            - 22 个 Remote 方法 · 138 个单元测试
 
             ### 📦 安装
             ```bash
