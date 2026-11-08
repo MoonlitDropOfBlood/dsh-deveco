@@ -78,7 +78,7 @@
     }
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check typert.host.js && node --check harmony-studio.mjs && node --check harmony-device.mjs && node --check harmony-config.mjs && node --check harmony-tools.mjs && node --check harmony-debugger.mjs && node --check harmony-agent-tools.mjs && node --check harmony-project.mjs && node --check harmony-source-map.mjs && node --check scripts/self-test.mjs && node --check scripts/e2e-agent-tools.mjs && node --check scripts/e2e-source-map.mjs && node --check scripts/e2e-breakpoint-notify.mjs",
+    "check": "node --check index.js && node --check client.js && node --check typert.host.js && node --check harmony-studio.mjs && node --check harmony-device.mjs && node --check harmony-config.mjs && node --check harmony-tools.mjs && node --check harmony-debugger.mjs && node --check harmony-agent-tools.mjs && node --check harmony-project.mjs && node --check harmony-source-map.mjs && node --check scripts/extract-release-notes.mjs && node --check scripts/self-test.mjs && node --check scripts/e2e-agent-tools.mjs && node --check scripts/e2e-source-map.mjs && node --check scripts/e2e-breakpoint-notify.mjs",
     "test": "node --test scripts/self-test.mjs --test-isolation=none",
     "e2e:notify": "node scripts/e2e-breakpoint-notify.mjs",
     "e2e:source-map": "node scripts/e2e-source-map.mjs"

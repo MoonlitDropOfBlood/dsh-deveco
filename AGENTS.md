@@ -35,9 +35,11 @@ dsh-deveco/
 ├── scripts/e2e-agent-tools.mjs  # 模拟器跑 agent 工程/调试工具的端到端探针（不依赖 DSH）
 ├── scripts/e2e-source-map.mjs   # 真实 Hvigor 工程 Source Map 双向映射探针（不依赖设备/DSH）
 ├── scripts/e2e-breakpoint-notify.mjs  # 断点通知链路端到端探针（假 ArkVM 服务端，不依赖设备/DSH）
+├── scripts/extract-release-notes.mjs # 按发布标签提取 CHANGELOG 对应版本段落（缺失/重复/为空即失败）
 ├── docs/arkts-debug-recon.md        # ArkTS 调试协议与 Source Map 实测调研（每条结论带证据与置信度）
 ├── docs/recon-scripts/               # 调研用探针（arkts-debug-probe*.mjs、jar 常量池提取脚本）
-├── .github/workflows/release.yml  # v* tag → 构建 + 发布 GitHub Release
+├── .github/workflows/release.yml  # v* tag → 构建 + 发布 GitHub Release（正文取 CHANGELOG 对应版本）
+├── CHANGELOG.md                # 版本变更记录与 GitHub Release 正文来源
 ├── AGENTS.md                 # 本文件
 ├── README.md                 # 用户面向
 └── LICENSE                   # MIT
@@ -293,7 +295,9 @@ dsh plugin --profile web add .   # 本地安装/重装
 
 ## 发布
 
-打 `v*` 标签推送到 Git，`.github/workflows/release.yml` 自动构建并发布 GitHub Release。
+1. 更新 `package.json` 版本，并在 `CHANGELOG.md` 添加唯一的 `## [X.Y.Z] - YYYY-MM-DD` 段落；Release 正文就是该段落到下一个二级标题之间的内容。
+2. 本地预览：`node scripts/extract-release-notes.mjs vX.Y.Z`。标签找不到版本、版本重复或段落为空时脚本会失败，CI 不再回退到静态旧模板。
+3. 打 `v*` 标签推送到 Git，`.github/workflows/release.yml` 自动检查、构建、发布 npm，并用 `body_path` 读取提取出的版本说明发布 GitHub Release。
 
 ## 常规注意事项
 
