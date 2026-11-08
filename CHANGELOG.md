@@ -4,9 +4,26 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-08
+
 ### Changed
 
-- 发布工作流改为从 `CHANGELOG.md` 读取对应版本说明；标签缺少唯一且非空的版本段落时停止发布，避免沿用旧模板。
+- **发布说明改为读取 `CHANGELOG.md`**：工作流按 `v*` 标签提取对应版本段落作为 GitHub Release 正文，不再沿用静态模板；标签缺少唯一且非空的版本段落时**直接失败**，杜绝发布出"130 个测试"这类过期说明。
+- 新增 `scripts/extract-release-notes.mjs`（支持 `## [X.Y.Z] - 日期`、`## X.Y.Z - 日期` 两种标题），可本地预览：`node scripts/extract-release-notes.mjs v0.7.0`。
+- 新增 `CHANGELOG.md` 作为版本变更记录与 Release 正文的唯一来源。
+
+### Validation
+
+- 138 项单元测试通过；语法检查与打包校验通过。
+- 已验证：0.6.0 段落提取正确；不存在的版本按预期拒绝发布。
+
+### 📦 安装
+
+```bash
+dsh plugin --profile web add @duke-dsh-plugins/dsh-deveco
+```
+
+也可使用本 Release 附件中的 tgz 包。安装后必须重启 DSH 生效。
 
 ## [0.6.0] - 2026-11-08
 
