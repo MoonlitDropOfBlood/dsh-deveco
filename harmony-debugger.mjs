@@ -98,8 +98,11 @@ export function summarizeCallFrames (callFrames, max = 20) {
 export function formatCallFrameLines (frames) {
   if (!Array.isArray(frames) || frames.length === 0) return []
   return frames.map((f) => {
-    const at = f.url ? `${f.url}:${f.lineNumber + 1}` : `<script ${f.scriptId}>:${f.lineNumber + 1}`
-    return `#${f.index} ${f.functionName || '<anonymous>'} @ ${at}`
+    const at = f.sourcePath
+      ? `${f.sourcePath}:${f.sourceLine || 1}`
+      : (f.url ? `${f.url}:${f.lineNumber + 1}` : `<script ${f.scriptId}>:${f.lineNumber + 1}`)
+    const generated = f.sourcePath && f.url ? ` [compiled: ${f.url}:${f.lineNumber + 1}]` : ''
+    return `#${f.index} ${f.functionName || '<anonymous>'} @ ${at}${generated}`
   })
 }
 
@@ -150,6 +153,11 @@ export function normalizeCallFrames (frames) {
       scriptId: source.scriptId !== undefined
         ? String(source.scriptId)
         : (location.scriptId !== undefined ? String(location.scriptId) : ''),
+      ...(typeof source.sourcePath === 'string' && source.sourcePath ? {
+        sourcePath: source.sourcePath,
+        sourceLine: Number(source.sourceLine) || 1,
+        sourceColumn: Number(source.sourceColumn) || 1,
+      } : {}),
     }
   })
 }
@@ -221,11 +229,13 @@ export function formatPauseNotification ({ bundleName = '', pid = 0, device = ''
   // 有命中断点就翻译成人话，别把 `other` 甩给 agent。
   const reason = describePauseReason(paused)
   const top = frames[0]
-  const location = top && top.url
-    ? `${top.url}:${(Number(top.lineNumber) || 0) + 1}`
-    : '未知位置'
+  const location = top && top.sourcePath
+    ? `${top.sourcePath}:${Number(top.sourceLine) || 1}`
+    : (top && top.url ? `${top.url}:${(Number(top.lineNumber) || 0) + 1}` : '未知位置')
   const app = bundleName || '目标应用'
-  const where = top && top.url ? `${shortScriptUrl(top.url)}:${(Number(top.lineNumber) || 0) + 1}` : '未知位置'
+  const where = top && top.sourcePath
+    ? `${shortScriptUrl(top.sourcePath)}:${Number(top.sourceLine) || 1}`
+    : (top && top.url ? `${shortScriptUrl(top.url)}:${(Number(top.lineNumber) || 0) + 1}` : '未知位置')
   const summary = `HarmonyOS 调试：${app} ${reason === '断点命中' ? '命中断点' : '已暂停'}于 ${where}`
   const lines = [
     `【HarmonyOS 调试通知】${app}${pid ? ` (pid ${pid})` : ''}${device ? ` @ ${device}` : ''} ${reason === '断点命中' ? '命中断点' : '已暂停'}。`,
@@ -363,6 +373,12 @@ export class ArktsDebuggerSession {
     this.notifyEnabled = true
     /** Whether the runtime currently skips all pauses (startup fast-forward). */
     this.skipPauses = false
+    /** @type {import('./harmony-source-map.mjs').HarmonySourceMapIndex|null} */
+    this.sourceMaps = null
+    /** Project root used for source-level breakpoints and frame mapping. */
+    this.projectRoot = ''
+    /** Last non-fatal source-map discovery/loading problem. */
+    this.sourceMapWarning = ''
   }
 
   /**

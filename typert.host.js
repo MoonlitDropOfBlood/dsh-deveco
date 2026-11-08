@@ -656,8 +656,8 @@ export const TYPERT = {
       "/**\n * Type the given text into the focused input field on the device.\n * @param request - `{ text }` plus optional `device`.\n */"),
 
     iv("listProjects", null, projectsSchema,
-      "List HarmonyOS projects visible to the plugin (empty list v1).",
-      "/**\n * List HarmonyOS projects visible to the plugin (empty list v1).\n */"),
+      "List the HarmonyOS project at the Host working directory, if any.",
+      "/**\n * List the HarmonyOS project at the Host working directory, if any.\n */"),
   ],
   model: {
     services: [
@@ -843,9 +843,9 @@ export const TYPERT = {
             kind: "method",
             name: "listProjects",
             signature: "@Remote('listProjects') async listProjects(): Promise<HarmonyDevEcoListProjectsResult>",
-            summary: "List HarmonyOS projects visible to the plugin (empty list v1).",
+            summary: "List the HarmonyOS project at the Host working directory, if any.",
             jsDoc:
-              "/**\n * List HarmonyOS projects visible to the plugin (empty list v1).\n */",
+              "/**\n * List the HarmonyOS project at the Host working directory, if any.\n */",
           },
         ],
         types: [

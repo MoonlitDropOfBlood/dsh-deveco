@@ -1,8 +1,9 @@
 /**
  * dsh-deveco — Agent-facing HarmonyOS tool definitions (Host half).
  *
- * One tool: `harmony_debug` — the **ArkTS runtime debugger** (attach,
- * breakpoints, pause/resume/step, stack, evaluate, properties). Nothing here
+ * Two tools: `harmony_project` — the read-only HarmonyOS project model, and
+ * `harmony_debug` — the **ArkTS runtime debugger** (source/compiled breakpoints,
+ * pause/resume/step, source-mapped stack, evaluate, properties). Nothing here
  * duplicates what `devecocli` already does well:
  *
  *   logs          → `devecocli log [--level] [--keyword] [--bundle-name] [--tail] [--format json]`
@@ -40,6 +41,8 @@ import {
   summarizeCallFrames,
   describePauseReason,
 } from './harmony-debugger.mjs'
+import { inspectHarmonyProject } from './harmony-project.mjs'
+import { assertSourceBreakpointFresh, loadHarmonySourceMapIndex } from './harmony-source-map.mjs'
 
 /** Errors thrown by tools become `isError` text; keep messages actionable. */
 function fail (message) {
@@ -98,6 +101,60 @@ async function debugSignature (host, device, bundle) {
 
 function textOf (r) {
   return (r && (r.stdout || r.stderr)) || ''
+}
+
+/** Current agent workspace, falling back to the Host/e2e working directory. */
+function agentWorkspace (exec, host) {
+  const cwd = exec && exec.agent && exec.agent.session && exec.agent.session.header
+    ? exec.agent.session.header.cwd
+    : ''
+  return cwd || (host && host.cwd) || process.cwd()
+}
+
+function mappedFrames (session, frames = session.paused && session.paused.frames) {
+  return session.sourceMaps ? session.sourceMaps.mapFrames(frames) : (Array.isArray(frames) ? frames : [])
+}
+
+function pausedData (session) {
+  if (!session.paused) return null
+  const frames = mappedFrames(session)
+  return {
+    reason: describePauseReason(session.paused),
+    rawReason: session.paused.reason,
+    hitBreakpoints: session.paused.hitBreakpoints || [],
+    frames,
+    stackLines: formatCallFrameLines(frames),
+  }
+}
+
+function sourceMapData (session) {
+  if (!session.sourceMaps) return session.sourceMapWarning ? { warning: session.sourceMapWarning } : null
+  return {
+    projectRoot: session.sourceMaps.projectRoot,
+    buildMode: session.sourceMaps.buildMode,
+    scriptCount: session.sourceMaps.scriptCount,
+    mapFileCount: session.sourceMaps.records.length,
+    warnings: session.sourceMaps.warnings.slice(-4),
+  }
+}
+
+/** Load/reload the project's maps; discovery is optional until source mode is used. */
+async function configureSessionSourceMaps (session, host, args, exec, required = false) {
+  const input = args.project_path || session.projectRoot || agentWorkspace(exec, host)
+  try {
+    const index = await loadHarmonySourceMapIndex(input, { buildMode: args.build_mode || session.sourceMaps?.buildMode || 'debug' })
+    session.sourceMaps = index
+    session.projectRoot = index.projectRoot
+    session.sourceMapWarning = index.scriptCount === 0
+      ? '工程存在，但没有可用 Source Map；先执行 debug 构建/运行后再使用源码断点。'
+      : ''
+    return index
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error)
+    session.sourceMapWarning = (required || args.project_path || session.projectRoot) ? message : ''
+    if (required || args.project_path) throw fail(`Source Map 初始化失败：${message}`)
+    return null
+  }
 }
 
 const DEBUG_ACTIONS = [
@@ -199,7 +256,7 @@ export function installPauseNotifier (session, host) {
       bundleName: session.bundleName,
       pid: session.pid,
       device: session.device,
-      paused: session.paused,
+      paused: session.paused ? { ...session.paused, frames: mappedFrames(session) } : session.paused,
     })
     try {
       const result = host.notifyAgent({ agent: owner, text: notice.text, summary: notice.summary })
@@ -256,6 +313,7 @@ async function attachSession (host, args, exec) {
     claimOwner(existing, exec, host)
     installPauseNotifier(existing, host)
     if (args.notify === false) existing.notifyEnabled = false
+    if (args.project_path || !existing.sourceMaps) await configureSessionSourceMaps(existing, host, args, exec)
     return { session: existing, reused: true, launchNote }
   }
 
@@ -306,6 +364,9 @@ async function attachSession (host, args, exec) {
   // "Break on start" per loaded module.
   session.noteExpectedPause(15000, { reasons: STARTUP_PAUSE_REASONS })
   try {
+    // Optional for legacy URL breakpoints; explicit project_path errors still
+    // pass through the same catch so the just-created hdc forward is removed.
+    await configureSessionSourceMaps(session, host, args, exec)
     await session.connect(6000)
     // 启动期默认跳过 ArkVM 的「每脚本一次 Break on start」暂停——否则 app
     // 会卡在启动页（实测 55 个脚本 = 55 次 resume，agent 根本没法调试）。
@@ -343,16 +404,60 @@ async function attachSession (host, args, exec) {
       skipPauses: session.skipPauses,
       scriptCount: scripts.length,
       scripts: scripts.slice(0, 40),
-      paused: session.paused
-        ? {
-            reason: describePauseReason(session.paused),
-            rawReason: session.paused.reason,
-            frames: session.paused.frames,
-            stackLines: formatCallFrameLines(session.paused.frames),
-          }
-        : null,
+      paused: pausedData(session),
+      sourceMaps: sourceMapData(session),
     },
   }
+}
+
+function buildHarmonyProjectTool (defineTool, host) {
+  return defineTool({
+    name: 'harmony_project',
+    description: 'Inspect a HarmonyOS application as a structured DevEco-style project model. Reads build-profile.json5, AppScope/app.json5, module.json5 and oh-package.json5, then returns the app identity, products/build modes, modules/targets, abilities, permissions, page routes, dependencies, built HAP/HSP/HAR/APP artifacts, and available ArkTS Source Maps. Pass any file/directory inside the project; omitted path uses the current agent workspace. Signing output contains only configuration names and completeness, never certificates, key aliases or passwords. Read-only.',
+    parameters: {
+      path: { type: 'string', description: 'Project root or any file/directory inside it. Omit to use the current session workspace.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          ok: { type: 'boolean', required: true },
+          project: { type: 'json', required: true },
+        },
+      },
+      render (args, value) {
+        const p = value.project
+        const lines = [
+          `${p.name || p.root}${p.bundleName ? ` · ${p.bundleName}` : ''}`,
+          `根目录：${p.root}`,
+          `版本：${p.versionName || '-'} (${p.versionCode || 0}) · 模型：${p.modelVersion || '-'} · 默认：${p.defaultProduct}/${p.defaultBuildMode}`,
+        ]
+        if (p.products.length) lines.push(`Products：${p.products.map((item) => `${item.name}[${item.targetSdkVersion || '-'}]`).join(', ')}`)
+        lines.push(`模块 ${p.modules.length} 个：`)
+        for (const module of p.modules) {
+          const details = [module.type || 'unknown', `${module.abilities.length} abilities`, `${module.requestPermissions.length} permissions`]
+          if (module.mainElement) details.push(`main=${module.mainElement}`)
+          if (module.deviceTypes.length) details.push(module.deviceTypes.join('/'))
+          lines.push(`- ${module.name}：${details.join(' · ')}`)
+          lines.push(`  ${module.path}`)
+          if (module.pages.length) lines.push(`  页面：${module.pages.join(', ')}`)
+          const maps = module.sourceMaps.reduce((sum, item) => Math.max(sum, item.scriptCount || 0), 0)
+          lines.push(`  构建产物 ${module.artifacts.length} · Source Map ${module.sourceMaps.length} 份${maps ? `（${maps} 脚本）` : ''}`)
+        }
+        if (p.warnings.length) lines.push(`警告：${p.warnings.join('；')}`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    async execute (args, exec) {
+      try {
+        return { ok: true, project: await inspectHarmonyProject(args.path || agentWorkspace(exec, host)) }
+      } catch (error) {
+        throw fail(error && error.message ? error.message : String(error))
+      }
+    },
+    isConcurrencySafe () { return true },
+  })
 }
 
 function buildHarmonyDebugTool (defineTool, host) {
@@ -360,7 +465,7 @@ function buildHarmonyDebugTool (defineTool, host) {
     name: 'harmony_debug',
     description: [
       'Debug a running ArkTS app on a HarmonyOS device with the ArkVM remote debugger — the channel DevEco Studio itself uses (hdc fport ark:<pid>@Debugger + a CDP-style JSON-RPC session).',
-      'Actions: attach (with launch=true it performs the verified wait-for-debugger flow: aa appdebug -b → aa force-stop → aa start -D → fport → handshake; without launch it attaches to a running pid), status/scripts (loaded script URLs to set breakpoints on), set_breakpoint/remove_breakpoint/breakpoints, pause/resume, step (over/into/out), stack (frames of the last Debugger.paused), evaluate (Debugger.evaluateOnCallFrame — Runtime.evaluate is unsupported by this runtime and the call must happen while paused), properties (Runtime.getProperties on a scope/object id), exceptions (setPauseOnExceptions none|uncaught|all), events (recent protocol events), notify (turn the automatic breakpoint notification on/off), skip_pauses (turn the runtime "skip all pauses" startup fast-forward on/off — setting a breakpoint or pausing turns it off automatically), detach. IMPORTANT: breakpoint line numbers refer to the COMPILED script (the runtime reports e.g. "entry|entry|1.0.0|src/main/ets/pages/Index.ts"), not the .ets source — the build output lives under app/entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets/... and its line numbers differ from the source.',
+      'Actions: attach (with launch=true it performs the verified wait-for-debugger flow: aa appdebug -b → aa force-stop → aa start -D → fport → handshake; without launch it attaches to a running pid), status/scripts (loaded script URLs), set_breakpoint/remove_breakpoint/breakpoints, pause/resume, step (over/into/out), stack (frames of the last Debugger.paused), evaluate (Debugger.evaluateOnCallFrame — Runtime.evaluate is unsupported and requires a paused frame), properties, exceptions, events, notify, skip_pauses, detach. Prefer SOURCE breakpoints: set source_path (.ets absolute/project-relative path) + source_line (1-based), optionally project_path/build_mode; the tool uses Hvigor Source Maps to choose the exact ArkVM URL and generated line, rejects stale maps, and maps stack frames/notifications back to .ets. The legacy url + line (0-based) form sets a COMPILED .ts breakpoint directly.',
       'Breakpoint URLs must equal the scriptParsed.url exactly (e.g. entry|hrouter|2.0.0|src/main/ets/...); lines are 0-based. Errors are returned inside result.code/message by the runtime, so a successful call means no code member. Only one debugger client per pid is allowed: an IDE debug session blocks attach, and attaching to an app that was not started with wait-for-debugger often yields an empty session (no scriptParsed/paused) — the tool reports that explicitly instead of pretending the session works.',
       'When the app stops at a breakpoint (or on an exception) this session is notified automatically with the pause location and the call stack — you receive it as an in-session message, so do not poll action=status in a loop to detect it. Pauses you trigger yourself (attach entry pause, action=pause, action=step) are reported inline by the tool result instead and are never pushed twice.',
       'This tool is only for the ArkTS runtime debugger. Device logs: devecocli log (--level/--keyword/--bundle-name/--tail/--format json) when DevEco CLI is installed, otherwise hdc shell hilog. App management: devecocli device app (list/info/start/stop/install/uninstall) or hdc/bm/aa shell commands. The UI tree is available through the harmony_ui_tree tool.',
@@ -375,9 +480,14 @@ function buildHarmonyDebugTool (defineTool, host) {
       ability: { type: 'string', description: 'attach/launch: ability to start (defaults to bm dump mainElementName).' },
       module: { type: 'string', description: 'attach/launch: module name (aa start -m).' },
       debug: { type: 'boolean', description: 'attach/launch: start with aa start -D (default true).' },
-      url: { type: 'string', description: 'set_breakpoint/remove_breakpoint: exact scriptParsed url.' },
-      line: { type: 'integer', description: 'set_breakpoint: 0-based line number.' },
-      column: { type: 'integer', description: 'set_breakpoint: 0-based column (default 0).' },
+      url: { type: 'string', description: 'Compiled mode: exact scriptParsed url for set_breakpoint/remove_breakpoint. scripts may also use it as a substring filter.' },
+      line: { type: 'integer', description: 'Compiled breakpoint only: 0-based generated .ts line. For .ets use source_line instead.' },
+      column: { type: 'integer', description: 'Compiled breakpoint only: 0-based generated column (default 0).' },
+      source_path: { type: 'string', description: 'Source breakpoint: .ets absolute path or project-relative path (for example entry/src/main/ets/pages/Index.ets).' },
+      source_line: { type: 'integer', description: 'Source breakpoint: 1-based .ets line. The resolver moves blank/non-executable lines to the next mapped statement and reports the actual line.' },
+      source_column: { type: 'integer', description: 'Source breakpoint: optional 1-based .ets column (default 1).' },
+      project_path: { type: 'string', description: 'Project root or any path inside it. Used to load Hvigor Source Maps; defaults to the current session workspace, then the session project.' },
+      build_mode: { type: 'string', enum: ['debug', 'release'], description: 'Source-map build variant (default debug). Must match the running app build.' },
       condition: { type: 'string', description: 'set_breakpoint: conditional expression.' },
       breakpoint_id: { type: 'string', description: 'remove_breakpoint: breakpoint id returned by set_breakpoint.' },
       expression: { type: 'string', description: 'evaluate: expression to run on the paused frame.' },
@@ -418,7 +528,10 @@ function buildHarmonyDebugTool (defineTool, host) {
         }
         if (Array.isArray(data.breakpoints) && data.breakpoints.length) {
           lines.push('断点：')
-          lines.push(...data.breakpoints.map((b) => `  ${b.url}:${(b.line || 0) + 1} ${b.condition ? 'if ' + b.condition : ''} (${b.breakpointId})`))
+          lines.push(...data.breakpoints.map((b) => {
+            const where = b.sourcePath ? `${b.sourcePath}:${b.sourceLine} → ${b.url}:${(b.line ?? 0) + 1}` : `${b.url}:${(b.line ?? 0) + 1}`
+            return `  ${where} ${b.condition ? 'if ' + b.condition : ''} (${b.breakpointId})`
+          }))
         }
         if (Array.isArray(data.events) && data.events.length) {
           lines.push(...data.events.slice(-(args.limit || 20)).map((e) => `  ${e.method}`))
@@ -432,7 +545,7 @@ function buildHarmonyDebugTool (defineTool, host) {
       if (action === 'attach') {
         const attached = await attachSession(host, args, exec)
         const data = attached.reused
-          ? { reused: true, protocols: attached.session.protocols }
+          ? { reused: true, protocols: attached.session.protocols, paused: pausedData(attached.session), sourceMaps: sourceMapData(attached.session) }
           : attached.data
         return debugResult('attach', attached.session, {
           message: [
@@ -458,14 +571,18 @@ function buildHarmonyDebugTool (defineTool, host) {
       // reported to whoever asked for the debug session last.
       claimOwner(session, exec, host)
       installPauseNotifier(session, host)
+      if ((args.project_path || args.build_mode) && action !== 'set_breakpoint') {
+        await configureSessionSourceMaps(session, host, args, exec)
+      }
       if (action === 'status') {
         return debugResult('status', session, {
           message: session.paused ? `已暂停（${describePauseReason(session.paused)}）` : '运行中',
           data: {
             protocols: session.protocols,
             scripts: [...session.scripts.keys()].length,
-            paused: session.paused ? { reason: session.paused.reason, frames: session.paused.frames } : null,
+            paused: pausedData(session),
             breakpoints: session.breakpoints,
+            sourceMaps: sourceMapData(session),
             closed: session.closed,
           },
         })
@@ -482,16 +599,54 @@ function buildHarmonyDebugTool (defineTool, host) {
         })
       }
       if (action === 'set_breakpoint') {
+        const sourcePath = typeof args.source_path === 'string' ? args.source_path.trim() : ''
+        let target = { url: args.url, line: args.line, column: args.column, condition: args.condition }
+        let source = null
+        if (sourcePath) {
+          const sourceLine = Number(args.source_line)
+          if (!Number.isInteger(sourceLine) || sourceLine < 1) throw fail('源码断点需要 source_line（1 基正整数）；line 仅用于编译后 .ts 的 0 基行号。')
+          const sourceColumn = args.source_column === undefined ? 1 : Number(args.source_column)
+          if (!Number.isInteger(sourceColumn) || sourceColumn < 1) throw fail('source_column 必须是 1 基正整数。')
+          const index = await configureSessionSourceMaps(session, host, args, exec, true)
+          if (!index || index.scriptCount === 0) throw fail('没有可用 Source Map：先对当前工程执行 debug 模式的 devecocli build/run，再设置源码断点。')
+          try {
+            source = index.resolveSourceBreakpoint({
+              sourcePath,
+              sourceLine: sourceLine - 1,
+              sourceColumn: sourceColumn - 1,
+              loadedScripts: new Set(session.scripts.keys()),
+            })
+          } catch (error) {
+            throw fail(error && error.message ? error.message : String(error))
+          }
+          if (!source) throw fail(`Source Map 中找不到 ${sourcePath}:${sourceLine} 的可执行映射。确认文件属于当前工程且已编译；空白/纯类型行可改到具体语句行。`)
+          await assertSourceBreakpointFresh(source, sourcePath, index.projectRoot).catch((error) => { throw fail(error.message) })
+          target = { url: source.url, line: source.line, column: source.column, condition: args.condition }
+        } else if (args.project_path || args.build_mode) {
+          await configureSessionSourceMaps(session, host, args, exec)
+        }
         // 断点只在「不跳过暂停」时才会命中——先把启动期跳过的开关关掉。
         await session.ensurePausesEnabled()
-        const reply = await session.setBreakpoint({ url: args.url, line: args.line, column: args.column, condition: args.condition })
+        const reply = await session.setBreakpoint(target)
         if (!reply.ok) throw fail(`设置断点失败：${(reply.error && reply.error.message) || 'unknown error'}`)
+        if (source) {
+          const breakpoint = [...session.breakpoints].reverse().find((item) => item.breakpointId === reply.value.breakpointId)
+          if (breakpoint) Object.assign(breakpoint, {
+            sourcePath: source.sourcePath,
+            sourceLine: source.sourceLine,
+            sourceColumn: source.sourceColumn,
+            requestedSourceLine: Number(args.source_line),
+          })
+        }
         const anyInvalid = Array.isArray(reply.value.locations) && reply.value.locations.some((l) => l.id === 'invalid')
+        const mapping = source
+          ? `源码 ${source.sourcePath}:${args.source_line} → ${source.url}:${source.line + 1}:${source.column + 1}${source.sourceLine !== Number(args.source_line) ? `（实际落在源码 ${source.sourceLine} 行）` : ''}`
+          : ''
         return debugResult('set_breakpoint', session, {
-          message: anyInvalid
-            ? '断点已记录，但该 url 当前没有已加载脚本可落点（id:"invalid"）——确认 url 与 scriptParsed.url 完全一致，或等脚本加载后再试。'
-            : '断点已设置',
-          data: { breakpointId: reply.value.breakpointId, locations: reply.value.locations, breakpoints: session.breakpoints },
+          message: [source ? `已设置源码断点：${mapping}` : '断点已设置', anyInvalid
+            ? '但该 url 当前没有已加载脚本可落点（id:"invalid"）——等脚本加载后再试，或确认运行的是当前构建。'
+            : ''].filter(Boolean).join('；'),
+          data: { breakpointId: reply.value.breakpointId, locations: reply.value.locations, source, sourceMaps: sourceMapData(session), breakpoints: session.breakpoints },
         })
       }
       if (action === 'skip_pauses') {
@@ -532,7 +687,7 @@ function buildHarmonyDebugTool (defineTool, host) {
         else session.markPauseReportedInline()
         return debugResult('pause', session, {
           message: paused ? `已暂停：${session.paused ? describePauseReason(session.paused) : ''}` : 'pause 已受理，但 6s 内没有 Debugger.paused（空闲 JS 线程无检查点；触发一次交互或改用断点）',
-          data: { paused: session.paused ? { reason: session.paused.reason, frames: session.paused.frames } : null },
+          data: { paused: pausedData(session) },
         })
       }
       if (action === 'resume') {
@@ -565,9 +720,13 @@ function buildHarmonyDebugTool (defineTool, host) {
         const paused = await pending
         if (!paused) session.clearExpectedPauses()
         else session.markPauseReportedInline()
+        const top = mappedFrames(session)[0]
+        const steppedLocation = top
+          ? (top.sourcePath ? `${top.sourcePath}:${top.sourceLine}` : `${top.url}:${(top.lineNumber || 0) + 1}`)
+          : '新位置'
         return debugResult('step', session, {
-          message: `已执行 step ${kind}${paused ? `（已停在 ${session.paused && session.paused.frames[0] ? session.paused.frames[0].url + ':' + ((session.paused.frames[0].lineNumber || 0) + 1) : '新位置'}）` : ''}`,
-          data: { paused: session.paused ? { reason: session.paused.reason, frames: session.paused.frames } : null },
+          message: `已执行 step ${kind}${paused ? `（已停在 ${steppedLocation}）` : ''}`,
+          data: { paused: pausedData(session) },
         })
       }
       if (action === 'run') {
@@ -579,10 +738,10 @@ function buildHarmonyDebugTool (defineTool, host) {
         if (!session.paused) {
           return debugResult('stack', session, { message: '当前未暂停：先触发断点 / step / pause，再读取调用栈。', data: {} })
         }
-        const frames = session.paused.frames
+        const frames = mappedFrames(session)
         return debugResult('stack', session, {
           message: `暂停原因：${describePauseReason(session.paused)}${session.paused.hitBreakpoints && session.paused.hitBreakpoints.length ? ` · 命中：${session.paused.hitBreakpoints.join(', ')}` : ''}`,
-          data: { reason: session.paused.reason, frames, stackLines: formatCallFrameLines(frames) },
+          data: { reason: session.paused.reason, frames, stackLines: formatCallFrameLines(frames), sourceMaps: sourceMapData(session) },
         })
       }
       if (action === 'evaluate') {
@@ -631,5 +790,5 @@ function buildHarmonyDebugTool (defineTool, host) {
  * @param {{ defineTool: Function, host: object }} api
  */
 export function buildHarmonyAgentTools ({ defineTool, host }) {
-  return [buildHarmonyDebugTool(defineTool, host)]
+  return [buildHarmonyProjectTool(defineTool, host), buildHarmonyDebugTool(defineTool, host)]
 }

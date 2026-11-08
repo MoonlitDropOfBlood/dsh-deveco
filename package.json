@@ -1,7 +1,7 @@
 {
   "name": "@duke-dsh-plugins/dsh-deveco",
-  "version": "0.5.0",
-  "description": "DSH 正式 bundle 插件：在官方右侧边栏（sidebarRightTabs）注册「HiLog 检查器」与「ArkUI Inspector」两个独立页面 Tab（HiLog 实时流 + 过滤；ArkUI UI 树 dump / 截图 / tap / swipe / text），并提供 .ets 文件查看器（ArkTS 语法高亮，内容经官方 remote.workspaceFiles 分页读取）；为对话 agent 提供 ArkTS 运行时调试器工具 harmony_debug（attach / 断点 / 暂停 / 单步 / 调用栈 / 求值，与 DevEco Studio 同款调试通道；应用停在断点时自动把暂停位置与调用栈通知回会话，无需轮询；日志与应用管理直接用官方 devecocli log / devecocli device app，不重复造轮子）；路径配置为设置根区的「HarmonyOS Suite」页面（settings.section；DevEco Studio / HarmonyOS Command Line Tools，含三平台自发现、两者互斥、CLT 最低 26.0.0 校验；若 PATH 存在 devecocli 则优先使用，忽略配置路径；未安装 devecocli 时设备列表 / 日志 / 截图 / Tap/Swipe/Text / 窗口列表自动降级到 SDK 自带的 hdc）。",
+  "version": "0.6.0",
+  "description": "DSH 正式 bundle 插件：在官方右侧边栏（sidebarRightTabs）注册「HiLog 检查器」与「ArkUI Inspector」两个独立页面 Tab（HiLog 实时流 + 过滤；ArkUI UI 树 dump / 截图 / tap / swipe / text），并提供 .ets 文件查看器（ArkTS 语法高亮，内容经官方 remote.workspaceFiles 分页读取）；为对话 agent 提供 harmony_project 工程模型（JSON5 配置 / 模块 / Ability / 权限 / 产物）与 ArkTS 运行时调试器 harmony_debug（Hvigor Source Map 驱动的 .ets 源码断点与源码调用栈，兼保留编译 URL 断点；attach / 暂停 / 单步 / 求值，与 DevEco Studio 同款调试通道；应用停在断点时自动把暂停位置与调用栈通知回会话，无需轮询；日志与应用管理直接用官方 devecocli log / devecocli device app，不重复造轮子）；路径配置为设置根区的「HarmonyOS Suite」页面（settings.section；DevEco Studio / HarmonyOS Command Line Tools，含三平台自发现、两者互斥、CLT 最低 26.0.0 校验；若 PATH 存在 devecocli 则优先使用，忽略配置路径；未安装 devecocli 时设备列表 / 日志 / 截图 / Tap/Swipe/Text / 窗口列表自动降级到 SDK 自带的 hdc）。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -22,6 +22,8 @@
     "harmony-tools.mjs",
     "harmony-debugger.mjs",
     "harmony-agent-tools.mjs",
+    "harmony-project.mjs",
+    "harmony-source-map.mjs",
     "cordis.patch.yml",
     "icon.svg",
     "scripts/self-test.mjs"
@@ -65,6 +67,7 @@
     "@deepseek-ai/dsh-typert-protocol": "^0.2.0-rc.1 || ^0.2.1-rc.0"
   },
   "dependencies": {
+    "json5": "^2.2.3",
     "zod": "^4.4.3"
   },
   "pnpm": {
@@ -75,8 +78,9 @@
     }
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check typert.host.js && node --check harmony-studio.mjs && node --check harmony-device.mjs && node --check harmony-config.mjs && node --check harmony-tools.mjs && node --check harmony-debugger.mjs && node --check harmony-agent-tools.mjs && node --check scripts/self-test.mjs && node --check scripts/e2e-breakpoint-notify.mjs",
+    "check": "node --check index.js && node --check client.js && node --check typert.host.js && node --check harmony-studio.mjs && node --check harmony-device.mjs && node --check harmony-config.mjs && node --check harmony-tools.mjs && node --check harmony-debugger.mjs && node --check harmony-agent-tools.mjs && node --check harmony-project.mjs && node --check harmony-source-map.mjs && node --check scripts/self-test.mjs && node --check scripts/e2e-agent-tools.mjs && node --check scripts/e2e-source-map.mjs && node --check scripts/e2e-breakpoint-notify.mjs",
     "test": "node --test scripts/self-test.mjs --test-isolation=none",
-    "e2e:notify": "node scripts/e2e-breakpoint-notify.mjs"
+    "e2e:notify": "node scripts/e2e-breakpoint-notify.mjs",
+    "e2e:source-map": "node scripts/e2e-source-map.mjs"
   }
 }

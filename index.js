@@ -90,6 +90,7 @@ import {
   readPngSize,
 } from "./harmony-device.mjs";
 import { buildHarmonyAgentTools } from "./harmony-agent-tools.mjs";
+import { inspectHarmonyProject } from "./harmony-project.mjs";
 import { buildDebuggerForwardRemoveArgs, createDebugNoticeMessage, decideDebugNoticeDelivery } from "./harmony-debugger.mjs";
 
 /**
@@ -499,11 +500,12 @@ export class HarmonyDevEcoService extends TypertRemoteService {
             }
           };
           register(buildHarmonyUiTreeTool(defineTool, this), "harmony_ui_tree");
-          // ArkTS 运行时调试器工具面（harmony_debug）。Host 只提供执行与设备
-          // 传输；命令构造、解析与会话状态机都在 harmony-agent-tools.mjs。
-          // 日志与应用管理不重复造轮子——agent 直接用 devecocli log / device app。
+          // 工程模型 + ArkTS 运行时调试器（harmony_project / harmony_debug）。
+          // Host 提供当前进程 cwd 与设备传输；当前 agent 的 session.header.cwd
+          // 在工具执行上下文中优先，保证 Web 多工作区下定位到正确工程。
           try {
             const host = {
+              cwd: process.cwd(),
               sessions: this._debugSessions,
               hdc: (argv, timeoutMs) => this._hdcRun(argv, timeoutMs),
               shell: (command, device, timeoutMs) => this._deviceShell(command, device, timeoutMs),
@@ -1674,15 +1676,18 @@ export class HarmonyDevEcoService extends TypertRemoteService {
   // ---- project browser -----------------------------------------------------
 
   /**
-   * List HarmonyOS projects visible to the plugin.
-   *
-   * Conservative v1: returns an empty array. The full implementation will scan
-   * the current workspace root for `oh-package.json5` / `build-profile.json5`
-   * and aggregate module lists, but that needs a workspaceRegistry contract
-   * we don't depend on yet. Returning `{projects: []}` keeps the wire stable.
+   * List the Host working directory's HarmonyOS project. Agent calls should use
+   * `harmony_project`, which prefers the calling session's workspace and also
+   * accepts an explicit project path; this legacy Remote keeps its compact
+   * `{name,path,bundleName?,moduleCount?}` wire for the existing client.
    */
   async listProjects() {
-    return ok({ projects: [] });
+    try {
+      const project = await inspectHarmonyProject(process.cwd());
+      return ok({ projects: [{ name: project.name, path: project.root, bundleName: project.bundleName, moduleCount: project.modules.length }] });
+    } catch (_) {
+      return ok({ projects: [] });
+    }
   }
 }
 

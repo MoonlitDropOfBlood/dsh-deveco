@@ -613,3 +613,87 @@ hdc -t <serial> fport rm tcp:19011 ark:<pid>@Debugger
 | `docs/recon-scripts/arkts-debug-probe3.mjs` | 真实会话序列（暂停态能力 + pause 观察） |
 | `docs/recon-scripts/arkts-debug-probe4.mjs` | 断点参数形状试错 + 空闲态 pause 观察 |
 | `docs/recon-scripts/jar-cpstrings.py` / `cpstrings.py` / `jarstrings.sh` | jar/class 常量池与字符串提取（反编译证据来源） |
+
+---
+
+## 9. Hvigor Source Map → `.ets` 源码断点（v0.6.0）
+
+### 9.1 关键结论
+
+**结论：不需要猜「源码行 + 固定偏移」。Hvigor 已经生成 Source Map v3 字典，其 key 就是 ArkVM 的 `scriptParsed.url`。置信度：确定（真实工程文件 + 双向映射验证）。**
+
+典型文件：
+
+```text
+entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/sourceMaps.json
+entry/build/default/intermediates/source_map/default/sourceMaps.map
+entry/build/default/intermediates/loader_out/default/sourceMaps.json
+entry/build/default/outputs/default/mapping/sourceMaps.map
+```
+
+字典形态（字段值截断展示）：
+
+```json
+{
+  "entry|entry|1.0.0|src/main/ets/pages/Index.ts": {
+    "version": 3,
+    "file": "Index.ts",
+    "sourceRoot": "",
+    "sources": ["Index.ets"],
+    "names": ["Index", ...],
+    "mappings": "..."
+  }
+}
+```
+
+实现位于 `harmony-source-map.mjs`：解码 VLQ `mappings`，同时支持 generated → original（调用栈）与 original → generated（断点）。Source Map 内部坐标仍按标准为 0 基；工具 API 的 `source_line/source_column` 显式转换为 **1 基**，底层 `line/column` 继续保持 **0 基**，两种坐标不混用。
+
+### 9.2 真实工程验证
+
+验证工程：`D:/ai-projects/dsh/dsh-remote-control/app`，源码 `entry/src/main/ets/pages/Index.ets` 第 296 行。命令：
+
+```bash
+node scripts/e2e-source-map.mjs \
+  --project D:/ai-projects/dsh/dsh-remote-control/app \
+  --source entry/src/main/ets/pages/Index.ets \
+  --line 296
+```
+
+实测结果：
+
+| 项 | 结果 |
+|---|---|
+| 应用 / 模块 | `com.dukedsh.remotecontrol` / `entry` (entry) |
+| Source Map 文件 | `entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/sourceMaps.json` |
+| 已索引脚本 | 40 |
+| Source Map 警告 | 0 |
+| 目标 ArkVM URL | `entry\|entry\|1.0.0\|src/main/ets/pages/Index.ts` |
+| 编译坐标 | 0 基 `line=339, column=4`（即文件第 340 行） |
+| 反解坐标 | 1 基 `entry/src/main/ets/pages/Index.ets:296:3` |
+
+这解释并修复了 §6.2 的「296 → 340」问题：该差异来自编译映射，而不是可硬编码的常量。本次验证覆盖真实 Hvigor 产物和双向映射，**不把它宣称为在线设备断点命中验证**。
+
+### 9.3 工具行为与保护
+
+- `harmony_debug(action=set_breakpoint)` 接收 `source_path` + 1 基 `source_line/source_column`，先定位 Source Map，再向 ArkVM 下发精确 URL 与编译坐标。
+- 优先精确源码行；该行没有映射时可落到下一可执行行，结果包含 `requested` / `resolved` / `moved`，message 明示实际落点。
+- 一个源码路径命中多个 ArkVM URL 时，优先使用当前已加载脚本消歧；无法消歧则报错，不随机选模块。
+- 源码文件 mtime 新于所选 map 时拒绝设置，要求先 build/run；防止「能设上但落在旧代码」的静默错误。
+- map 缺失、JSON 损坏或超过 32 MiB 均有明确错误/警告。普通调试 attach 不强制要求工程存在；显式 `project_path` 无效则报错。
+- Source Map 索引在 attach 时装入 `ArktsDebuggerSession`，因此 `stack`、`pause`、`step`、`status` 和自动暂停通知都同步显示源码位置；原始 `url/lineNumber/columnNumber` 保留用于协议诊断。
+- `harmony_project` 与调试工具共用工程根发现；默认取当前 agent workspace（`exec.agent.session.header.cwd`），可用显式路径覆盖。
+
+### 9.4 验证入口
+
+```bash
+# 无设备：真实 Hvigor 映射
+npm run e2e:source-map -- --project <root> \
+  --source entry/src/main/ets/pages/Index.ets --line 296
+
+# 模拟器在线后：真实 defineTool + 工程 + 源码断点
+node scripts/e2e-agent-tools.mjs --device <emulator> --bundle <pkg> \
+  --project <root> --source entry/src/main/ets/pages/Index.ets \
+  --source-line 296 --attach
+```
+
+设备断点命中与多模块延迟加载仍应在模拟器在线后分别复测；没有在线设备时不标记为已通过。

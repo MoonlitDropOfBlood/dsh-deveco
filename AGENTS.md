@@ -9,9 +9,9 @@
 - **官方右侧边栏（`ctx.sidebarRightTabs`）注册两个页面 Tab**：
   - **HiLog 检查器**（id `dsh-deveco:hilog`，guide order 50）：实时日志流（**级别/包名/关键词过滤**——级别 chips 是进缓冲的门槛（读取环）；**关键词与包名是客户端实时视图过滤**：流跑着随时改随时生效、清空即回溯，包名经 `deviceProcessPids` 把 bundle 映射成 pid 集合后按行 pid 过滤；**日志内查找**：HiLog Tab 可见时接管 Ctrl/Cmd+F 弹出查找栏——当前视图内全部命中 `<mark>` 高亮 + 计数，Enter/↓/› 下一个、Shift+Enter/↑/‹ 上一个（循环）、Esc/× 关闭，当前命中行整行描边并平滑滚动定位，定位 effect 只 keyed on 查找状态不挂 lines（日志每秒追加不得拽回视图）），基于 `devecocli log --follow` 封装（未安装 devecocli 时自动降级 `hdc shell hilog`，见 §12）
   - **ArkUI Inspector**（id `dsh-deveco:arkui`，guide order 51）：**Chrome Elements 风格**——左侧设备截图（`uiScreenshot` 内联 dataUrl，点击截图命中节点并以**像素级 overlay** 按 `origBounds` 真实矩形高亮），右上 **可折叠** UI 树（层级引导线 + 自定义组件单独标注 + tap/scroll 标记 + 折叠全部/展开全部 + **树搜索**），右下节点属性（**全部设备原始属性** + **属性名/值搜索**）与盒子模型；顶部**窗口下拉**切换窗口；底部 Tap/Swipe/Text 操作
-  - **Projects** 项目浏览器为 v1.0 占位（listProjects 返回空数组；v1.1 路线）
+  - **Projects 数据面**：`listProjects` 识别 Host 工作目录中的 HarmonyOS 工程并保持紧凑 Remote 契约；完整工程模型走 agent 工具 `harmony_project`（当前无独立 Projects 图形页）
 - **官方右侧边栏注册 `.ets` 文件查看器**（id `dsh-deveco:arkts`，`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤，priority `extension` 优先于内置 text editor）。提供 ArkTS 语法高亮（关键字 + 装饰器 + 注释 + 字符串 + 数字）；内容经官方 `remote.workspaceFiles.read` 分页读取（绝对路径回退插件自有 `readTextFile` Remote）。
-- **给对话里的 agent 提供 ArkTS 运行时调试器**（`ctx.tools` 的 `harmony_debug`）：attach/断点/暂停/单步/调用栈/求值，通道＝`hdc fport ark:<pid>@Debugger` + 裸 socket 6 头 WS + CDP 风格 JSON-RPC，与 DevEco Studio 同款。**不重复造 devecocli 的轮子**：日志走 `devecocli log`，应用管理走 `devecocli device app`，UI 树走本插件的 `harmony_ui_tree`。
+- **给对话里的 agent 提供工程模型与 ArkTS 运行时调试器**（`ctx.tools` 的 `harmony_project` / `harmony_debug`）：工程根/模块/Ability/权限/产物只读解析；调试支持 Hvigor Source Map 驱动的 `.ets` 源码断点与源码调用栈，底层通道＝`hdc fport ark:<pid>@Debugger` + 裸 socket 6 头 WS + CDP 风格 JSON-RPC，与 DevEco Studio 同款。**不重复造 devecocli 的轮子**：日志走 `devecocli log`，应用管理走 `devecocli device app`，UI 树走本插件的 `harmony_ui_tree`。
 - **设置面板新增「HarmonyOS Suite」页**（`settings.section`，order 40），分「工具链」「设备管理」两区。工具链区管理 DevEco Studio 与 HarmonyOS Command Line Tools 路径（三平台自发现、Studio/CLT 互斥、CLT 最低版本 26.0.0 校验）；设备管理区含**设备列表**（USB/网络目标，网络 `ip:port` 目标可一键断开）与 **IP 网络连接**表单（`hdc tconn <ip>:<port>`）。
 
 ## 目录结构
@@ -19,20 +19,23 @@
 ```
 dsh-deveco/
 ├── package.json              # ESM 双面包：dsh.bundle.patch + dsh.client.web + exports(., /client, /typert, /package.json)
-├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，22 个 Remote 方法 + 2 个 agent 工具注册）
+├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，22 个 Remote 方法 + harmony_ui_tree/harmony_project/harmony_debug 注册）
 ├── client.js                 # Client 半：__ModuleLoader__ bundle（Tab + Viewer + Settings + Remote mount）
 ├── typert.host.js            # Typert Host manifest：harmonyDevEco Remote 服务全部 invocation 的 zod schema
 ├── harmony-studio.mjs        # 零依赖：工具链路径探测（devecocli > CLT ≥26.0.0 > Studio）+ 版本解析 + 三平台默认路径
 ├── harmony-config.mjs        # 零依赖：配置持久化 + Studio/CLT 互斥 + 自发现调度
 ├── harmony-device.mjs        # 零依赖：devecocli 进程封装 + hdc 降级命令（list targets / hilog / hidumper / uitest / screenCap）+ IP 连接（tconn）+ HiLog/ui-layout JSON 解析 + 裸 WS 帧编解码
 ├── harmony-tools.mjs         # 零依赖：调试器所需的设备命令构造/解析（bm dump 签名探测、aa appdebug/start/force-stop、ps -ef）+ 注入安全（shellQuote + 白名单正则）
-├── harmony-debugger.mjs      # 零依赖：ArkTS 运行时调试器会话（裸 socket WS + CDP 风格 JSON-RPC；断点/暂停/单步/求值/属性）
-├── harmony-agent-tools.mjs   # 零依赖：agent 工具定义（harmony_debug），执行经 host 端口注入
+├── harmony-debugger.mjs      # 零依赖：ArkTS 运行时调试器会话（裸 socket WS + CDP 风格 JSON-RPC；断点/暂停/单步/求值/属性；帧展示支持源码投影）
+├── harmony-project.mjs       # JSON5：HarmonyOS 应用根发现、产品/模块/Ability/权限/依赖/产物模型；签名材料脱敏
+├── harmony-source-map.mjs    # 零依赖：Hvigor Source Map v3 VLQ 解码、源码断点定位与调用栈反解
+├── harmony-agent-tools.mjs   # agent 工具定义（harmony_project / harmony_debug），执行经 host 端口注入
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 130 个独立核心单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归 + hdc 降级 + 断点通知）
-├── scripts/e2e-agent-tools.mjs  # 真机/模拟器跑 agent 调试工具的端到端探针（不依赖 DSH）
+├── scripts/self-test.mjs     # 138 个独立核心单元测试（含工程模型、Source Map 与源码断点/通知）
+├── scripts/e2e-agent-tools.mjs  # 模拟器跑 agent 工程/调试工具的端到端探针（不依赖 DSH）
+├── scripts/e2e-source-map.mjs   # 真实 Hvigor 工程 Source Map 双向映射探针（不依赖设备/DSH）
 ├── scripts/e2e-breakpoint-notify.mjs  # 断点通知链路端到端探针（假 ArkVM 服务端，不依赖设备/DSH）
-├── docs/arkts-debug-recon.md        # ArkTS 调试协议实测调研（615 行，每条结论带证据与置信度）
+├── docs/arkts-debug-recon.md        # ArkTS 调试协议与 Source Map 实测调研（每条结论带证据与置信度）
 ├── docs/recon-scripts/               # 调研用探针（arkts-debug-probe*.mjs、jar 常量池提取脚本）
 ├── .github/workflows/release.yml  # v* tag → 构建 + 发布 GitHub Release
 ├── AGENTS.md                 # 本文件
@@ -125,7 +128,7 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 | `uiTap` | 点击 |
 | `uiSwipe` | 滑动 |
 | `uiText` | 输入文本 |
-| `listProjects` | 列出鸿蒙工程（v1.0 返回空） |
+| `listProjects` | 识别 Host cwd 中的鸿蒙应用根，按既有 schema 返回 `{name,path,bundleName,moduleCount}`；完整模型用 `harmony_project` |
 | `readTextFile` | 读取 UTF-8 文本文件（2 MiB 截断），.ets 查看器绝对路径回退用 |
 
 ### 6. 工具链解析优先级（用户决策）
@@ -174,13 +177,14 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 - **实现复用**：工具走 `service._fetchDevEcoTree()`（rich：nodes + source + pid + packageName）；Remote `uiDevEcoTree` 是它的薄包装（严格按 TYPERT 契约只回 `{nodes, source}`）。同一份取树链路两面共用。
 - **边界同 DevEco 调试源**：需 debug 应用 + IDE Inspector 面板未占用（单客户端）；失败时抛错（registry 转 isError 文本），错误信息含全部前置条件指引。`isConcurrencySafe: true`（只读无共享状态，可并行）。
 
-### 10. Agent 调试工具面（v0.4.0 新增）
+### 10. Agent 工程与调试工具面（v0.6.0 合并）
 
-Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的 `buildHarmonyAgentTools`）：**命令构造/解析/会话状态机全在 `harmony-*.mjs` 纯函数模块里**，`index.js` 只提供执行与设备传输（`host.hdc` / `host.shell` / `host.sessions`），因此可脱离 DSH 单测。
+Host 经 `buildHarmonyAgentTools` 注册 `harmony_project` 与 `harmony_debug`：**命令构造/解析/工程模型/Source Map/会话状态机全在 `harmony-*.mjs` 模块里**，`index.js` 只提供 cwd 与设备传输（`host.hdc` / `host.shell` / `host.sessions`），因此可脱离 DSH 单测。工具默认工程路径优先取 `exec.agent.session.header.cwd`，显式 `path` / `project_path` 优先。
 
 | 工具 | 动作 | 底层 |
 |---|---|---|
-| `harmony_debug` | attach / status / scripts / set_breakpoint / remove_breakpoint / breakpoints / pause / resume / step / run / stack / evaluate / properties / exceptions / events / notify / detach | **ArkTS 运行时调试器**（见 §11） |
+| `harmony_project` | path 可为工程根或内部任意路径 | `harmony-project.mjs`：JSON5 配置 + 模块/产物模型，签名脱敏 |
+| `harmony_debug` | attach / status / scripts / set_breakpoint / remove_breakpoint / breakpoints / pause / resume / step / run / stack / evaluate / properties / exceptions / events / notify / detach | **ArkTS 运行时调试器 + Hvigor Source Map**（见 §10.2 / §11） |
 
 - **不重复造 devecocli 的轮子（用户决策）**：`devecocli log` 已覆盖日志（`--level/--keyword/--bundle-name/--tail/--format json/--follow`），`devecocli device app` 已覆盖 list/info/start/stop/install/uninstall（`device app info --format json` 里就有 `applicationInfo.appProvisionType`＝debug 签名判定），`devecocli ui layout` 覆盖布局树。**因此不提供 `harmony_hilog` / `harmony_app` 工具**——agent 直接跑 CLI 即可；插件只补 devecocli 没有的那块：**ArkTS 运行时调试器**。
 - **工具描述里要点明分工**（`harmony_debug.description` 末段）：日志走 `devecocli log`、应用管理走 `devecocli device app`、UI 树走 `harmony_ui_tree`——避免 agent 在三处重复试探。
@@ -209,6 +213,14 @@ Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的
 - **`ctx.get("agents")` 不是 `ctx.agents`**：插件没 inject `agents` 服务，直接取属性拿不到；`ctx.get(name)` 才是「有就用、没有就 undefined」的写法。
 
 
+### 10.2 `.ets` 源码断点与 Source Map（v0.6.0 新增）
+
+- **真实映射，不猜行号**：Hvigor 的 `sourceMaps.json` / `sourceMaps.map` 是以 ArkVM `scriptParsed.url` 为 key 的 Source Map v3 字典；`harmony-source-map.mjs` 解码 VLQ `mappings`，不用固定偏移。真实回归样本：`Index.ets:296` → 编译 0 基 `339:4`（文件第 340 行），反向仍回 `.ets:296`。
+- **发现顺序**：优先 `<module>/build/<product>/cache/<target>/default@CompileArkTS/esmodule/<debug|release>/sourceMaps.json`；缺失才回退 `intermediates/source_map`、`loader_out`、`outputs/.../mapping`。有模式专属 cache 时不重复读中间副本。
+- **参数坐标严格分离**：源码 `source_path` + **1 基** `source_line/source_column`；兼容编译 `url` + **0 基** `line/column`。精确源码行优先；无精确映射才移到下一可执行行，并在结果/message 里报告实际行。多个 URL 有候选且没有已加载脚本可消歧时直接报错。
+- **过期保护**：源文件 mtime 新于所选 Source Map 时拒绝设源码断点，提示先 build/run。没有 map、JSON 损坏、超过 32 MiB 都明确警告/报错。
+- **会话级索引**：attach 时按当前 agent workspace/project_path 加载，保存在 `session.sourceMaps`；通知回调不做异步 I/O，直接同步映射当前帧。`attach/status/pause/step/stack` 与自动通知共享同一投影，帧保留原 `url/lineNumber/columnNumber` 并增加 `sourcePath/sourceLine/sourceColumn`。
+
 ### 11. ArkTS 运行时调试器（实测链路，docs/arkts-debug-recon.md 有完整证据）
 
 - **通道**：`hdc fport tcp:<本地端口> ark:<pid>@Debugger` → **裸 socket 6 头 WS 握手**（`GET /` + Connection/Host/Sec-WebSocket-Key/Sec-WebSocket-Version/Upgrade，与 ArkUI Inspector **同一套**握手，复用 `harmony-device.mjs` 的 `buildDevEcoWsHandshake`/`encodeWsClientTextFrame`/`encodeWsPongFrame`/`decodeWsServerFrames`）→ **CDP 风格 JSON-RPC**（`{id,method,params}`/`{id,result}`，事件无 id）。
@@ -221,7 +233,7 @@ Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的
 - **求值实测**：`evaluateOnCallFrame("1+1")` 在入口暂停帧返回 `{"type":"undefined"}`（入口帧无局部变量），`globalThis` 返回带 `objectId` 的对象；**别把 undefined 当失败**。
 - **ArkVM 对**每个加载的模块**都发一次 `Debugger.paused`（reason="Break on start"）**（2026-11-07 真机实测：`com.dukedsh.remotecontrol` attach 后依次收到 `scriptParsed` → `paused(Break on start)` → `resume` → `scriptParsed` → `paused(Break on start @ hrouter|hrouter|2.0.0|src/main/ets/api/ModuleLoader.ts:8)`——第二次是**库模块**的初始化暂停）。**这些启动类暂停是噪音**：入口那次由 attach 结果内联回报，库模块那些与 agent 的断点无关。规则：**reason 属于 `STARTUP_PAUSE_REASONS`（break on start / on start / on entry / entry / startup）的暂停一律不推送**；通知只关心 `break`（断点命中）、`exception`（异常）等。
 - **ArkVM 对**每一个新加载的脚本**都发一次 `Debugger.paused(reason="Break on start")`**（2026-11-07 模拟器实测：远程控制 app 一次加载 **55 个脚本 = 55 次启动暂停**；不处理的话 app 永远卡在启动页，agent 要 resume 55 次才跑得起来）。**解法：`Debugger.setSkipAllPauses {skip:true}`**——必须在 `Runtime.runIfWaitingForDebugger` **之前**下发，实测 `scriptParsed=55 / paused=0`，app 一次跑完。**这个开关是 app 进程级状态**：上一轮会话开过 skip，同一个 app 再 attach 就会一直不暂停，所以「不跳过」必须**显式**下发一次 `skip:false`。插件侧：`attach` 默认 `skip_pauses=true`；`set_breakpoint`/`pause`/`step` 会先 `ensurePausesEnabled()` 再动作（跳过期间断点不命中）；另有独立动作 `skip_pauses` 手动开关。
-- **断点行号是「编译产物」的行号，不是 .ets 源码行号**（2026-11-07 实测踩坑：源码 `onCreateSession` 在 296 行，编译后在 **340** 行；按源码行号设断点 → `id:"invalid"` 或永不命中）。编译产物在 `app/entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets/...`（debug 构建；release 在 `esmodule/release/...`）。runtime 上报的 url 形态 `<moduleName>|<moduleName>|<version>|<工程内相对路径>`（例：`entry|entry|1.0.0|src/main/ets/pages/Index.ts`）——**第二段是模块名不是 bundle 名**，扩展名是 **`.ts`**（源码是 `.ets`）。
+- **底层 `url` 断点的行号仍是编译产物 0 基坐标，不是 .ets 源码行号**（2026-11-07 实测踩坑：源码 `onCreateSession` 在 296 行，编译后在 **340** 行；按源码行号直接设底层断点 → `id:"invalid"` 或永不命中）。现在 agent 应用 §10.2 的 1 基 `source_path/source_line/source_column` 经真实 Source Map 转换；只有诊断底层协议时才直接用 `url/line/column`。编译产物在 `app/entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/entry/src/main/ets/...`。runtime 上报的 url 形态 `<moduleName>|<moduleName>|<version>|<工程内相对路径>`——**第二段是模块名不是 bundle 名**，扩展名是 **`.ts`**。
 - **断点命中的 `paused.reason` 是 `other`，不是 `break`**（实测 `paused reason=other @ entry|entry|1.0.0|src/main/ets/pages/Index.ts:341`）。通知文案要把「other + 有 hitBreakpoints」翻译成「断点命中」，别把 `other` 原样甩给 agent。
 - **会话生命周期**：`index.js` 持有 `this._debugSessions`（pid → session），插件 dispose 时逐个 `close()` 并 `fport rm`（**漏规则会挡住下一次 attach**）。同一 pid 重复 attach 复用会话；多会话时工具要求显式给 `pid`。
 - **端口**：`pickFreePort()` 取空闲端口；`hdc fport` 回 `[Fail]TCP Port listen failed at <p>` 说明端口被占（残留规则/别的会话），**换端口重试**（最多 3 次）而不是连进别人的端口。
@@ -255,9 +267,10 @@ Host 注册 **一个** 新工具 `harmony_debug`（`harmony-agent-tools.mjs` 的
 ## 开发 / 验证
 
 ```bash
-npm run check              # 全部 JS 语法检查（含 3 个新模块）
-npm test                   # 130 个单元测试（原 93 + 命令构造/解析 + 调试协议纯函数 + client 图标契约回归 + hdc 降级 + 断点通知文案/投递决策/暂停抑制）
-node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --attach   # 真机/模拟器跑 agent 调试工具（不依赖 DSH）
+npm run check              # 全部 JS 语法检查（含工程模型/Source Map/e2e 模块）
+npm test                   # 138 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知）
+node scripts/e2e-source-map.mjs --project <root> --source entry/src/main/ets/pages/Index.ets --line 296  # 真实 Hvigor Source Map 双向验证（不依赖设备/DSH）
+node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --project <root> --source entry/src/main/ets/pages/Index.ets --source-line 296 --attach   # 模拟器跑工程 + 源码断点工具（不依赖 DSH）
 npm run e2e:notify             # 断点通知链路端到端（**不依赖设备**：假 ArkVM 服务端 + 真会话 + 真工具 + 真 Host 投递）
 node docs/recon-scripts/arkts-debug-probe-skip.mjs --bundle <pkg>    # 探针：setSkipAllPauses 能不能压掉逐脚本启动暂停
 node docs/recon-scripts/arkts-debug-probe-break.mjs --bundle <pkg>   # 探针：skip=false 后断点是否仍命中（配 devecocli ui click 触发）
@@ -275,7 +288,7 @@ dsh plugin --profile web add .   # 本地安装/重装
 6. HiLog Tab：选设备（先点「刷新设备」）→「开始」→ 日志流出现；**流跑着直接改过滤即时生效**：点击级别 chip、输入关键词（message/tag/domain/pid 不区分大小写子串）、输入包名（防抖 500ms 经 `deviceProcessPids` 解析 pid 集合后按行 pid 过滤；主进程 + `:render` 等后缀进程全收）→ 顶部出现「显示 M / N 行」计数；清空关键词/包名后已缓冲的行**立即全部回来**（视图过滤不丢历史）；包名未运行时提示「未找到运行进程」；**Ctrl+F**（HiLog Tab 可见时）→ 弹出查找栏 → 输入即高亮全部命中 + `n/N` 计数 → Enter/› 循环跳转（当前行描边+滚动跟随）→ Shift+Enter/‹ 反向 → Esc 关闭；切到其他 Tab 后 Ctrl+F 不被本插件接管
 7. ArkUI Tab：「Dump UI」→ **自动截图 + 当前树源的 UI 树** → 顶部**「树源」下拉**两选一切换即重抓（DevEco 调试源＝应用侧 ark socket，带盒模型声明值与组件名，窗口下拉此时禁用——该源按应用抓取；无障碍树＝uitest，适合已发布应用）、**「窗口」下拉**（**自动选中前台窗口**、**无「全部窗口」选项**，切换即重抓）→ 树上**折叠/展开**、层级引导线（**线性缩进不封顶**）、**名字为主标签**（能提取组件名就只显示组件名，如 `ImageKnifePro`；提取不到的 compid 照 DevEco 原样显示，如 `mainNavigationId`/`tab_0`；再没有显示真实类型含 `__Common__`，不显示 id、不编造占位文案）、`#accessibilityId` 标识、**「仅组件」过滤**、**树搜索框**（输入即筛：匹配 componentName/devId/className/text，`#数字`＝accessibilityId；只显示命中行+祖先链、命中片段 `<mark>` 高亮、命中字段不在行上可见时补显小字；Enter/↓/› 下一个、Shift+Enter/↑/‹ 上一个、Esc/「清除」退出并**还原原折叠状态**；当前命中行自动成为选中节点——属性面板/截图蓝框联动；与「仅组件」叠加时候选收窄、祖先链不变；搜索中点截图命中的非匹配行也经选中路径保留可见；重新 Dump/切源/切窗口后 query 保留、光标回首个命中） → 点节点或**点截图**（树自动展开并滚动定位）→ 蓝框高亮 → 属性面板**搜索框**过滤、列出**全部设备原始属性** → 盒子模型显示**组件区域 / 内容区域 / 四边内缩实测值**；padding/margin/border/圆角在 DevEco 调试源下显示**声明值**，uitest 源显示「未提供」
 8. 打开任意 `.ets` 文件 → ArkTS 高亮查看器打开（文件名作为 tab 标题）
-9. Projects 能力：v1.0 占位（listProjects 返回空数组）
+9. 工程与源码调试：调用 `harmony_project` 能返回应用/模块/Ability/权限且不含签名材料；有 map 时 `harmony_debug` 用 `source_path + source_line` 返回源码断点，暂停通知/stack 显示 `.ets` 并保留编译坐标
 10. 设置页「设备管理」区：设备列表出现（或空态文案）→ IP 连接后列表出现「网络」徽章的 ip:port 目标 → 点行内「断开」→ 列表自动刷新
 
 ## 发布

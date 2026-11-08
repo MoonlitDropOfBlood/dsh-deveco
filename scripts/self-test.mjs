@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { loadConfig, saveConfig, setStudioPath, setCltPath, discoverAll, ensureDiscovery } from '../harmony-config.mjs'
 import {
   execCli, execHdc, parseHilogLine, parseUiLayoutJson, parseBounds,
@@ -35,7 +35,12 @@ import {
   ArktsDebuggerSession, shortScriptUrl, formatPauseNotification, createDebugNoticeMessage, describePauseReason,
   decideDebugNoticeDelivery
 } from '../harmony-debugger.mjs'
-import { installPauseNotifier } from '../harmony-agent-tools.mjs'
+import { installPauseNotifier, buildHarmonyAgentTools } from '../harmony-agent-tools.mjs'
+import { findHarmonyProjectRoot, inspectHarmonyProject } from '../harmony-project.mjs'
+import {
+  decodeVlqSegment, decodeSourceMapMappings, originalPositionFor, generatedPositionFor,
+  loadHarmonySourceMapIndex, assertSourceBreakpointFresh,
+} from '../harmony-source-map.mjs'
 
 test('loadConfig returns empty when file missing', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'dsh-deveco-'))
@@ -2143,4 +2148,218 @@ test('the shared pause reason label translates the ArkVM "other" reason', () => 
   assert.equal(describePauseReason({ reason: 'other', hitBreakpoints: [] }), 'other')
   assert.equal(describePauseReason({ reason: 'exception' }), 'exception')
   assert.equal(describePauseReason(null), 'break')
+})
+
+// ---------------------------------------------------------------------------
+// HarmonyOS project model + ArkTS Source Maps
+// ---------------------------------------------------------------------------
+
+function createHarmonyProjectFixture () {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-deveco-project-'))
+  const write = (name, content) => {
+    const path = join(root, ...name.split('/'))
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, content)
+    return path
+  }
+  write('build-profile.json5', `{
+    // JSON5 comments, single quotes, unquoted keys and trailing commas are valid.
+    app: {
+      signingConfigs: [{ name: 'default', type: 'HarmonyOS', material: {
+        certpath: 'secret-cert', profile: 'secret-profile', storeFile: 'secret-store',
+        storePassword: 'secret-password', keyAlias: 'secret-alias', keyPassword: 'secret-key',
+      }}],
+      products: [{ name: 'default', signingConfig: 'default', targetSdkVersion: '26.0.0', compatibleSdkVersion: '26.0.0', runtimeOS: 'HarmonyOS' }],
+      buildModeSet: [{ name: 'debug' }, { name: 'release' }],
+    },
+    modules: [{ name: 'entry', srcPath: './entry', targets: [{ name: 'default', applyToProducts: ['default'] }] }],
+  }`)
+  write('AppScope/app.json5', `{ app: { bundleName: 'com.example.demo', vendor: 'test', versionCode: 10001, versionName: '1.0.1' } }`)
+  write('oh-package.json5', `{ name: 'demo', modelVersion: '26.0.0', dependencies: { hrouter: '^2.0.0' }, devDependencies: { '@ohos/hypium': '1.0.25' } }`)
+  write('entry/build-profile.json5', `{ apiType: 'stageMode', targets: [{ name: 'default' }] }`)
+  write('entry/oh-package.json5', `{ name: 'entry', version: '1.0.0', dependencies: { eventpost: '^2.0.0' } }`)
+  write('entry/src/main/module.json5', `{ module: {
+    name: 'entry', type: 'entry', mainElement: 'EntryAbility', deviceTypes: ['phone', 'tablet'],
+    pages: '$profile:main_pages', routerMap: '$profile:router_map',
+    abilities: [{ name: 'EntryAbility', srcEntry: './ets/entryability/EntryAbility.ets', exported: true }],
+    requestPermissions: [{ name: 'ohos.permission.INTERNET' }],
+  } }`)
+  write('entry/src/main/resources/base/profile/main_pages.json', JSON.stringify({ src: ['pages/Index'] }))
+  const source = write('entry/src/main/ets/pages/Index.ets', 'const a = 1\nconst b = 2\nconst c = 3\n')
+  const url = 'entry|entry|1.0.0|src/main/ets/pages/Index.ts'
+  const map = write('entry/build/default/cache/default/default@CompileArkTS/esmodule/debug/sourceMaps.json', JSON.stringify({
+    [url]: {
+      version: 3,
+      file: 'Index.ts',
+      sources: ['entry/src/main/ets/pages/Index.ets'],
+      names: [],
+      mappings: 'AAAA;AACA;AACA',
+    },
+  }))
+  write('entry/build/default/outputs/default/entry-default-signed.hap', 'fixture-hap')
+  return { root, source, map, url }
+}
+
+test('harmony_project reads JSON5 project structure from any nested path without exposing signing material', async () => {
+  const fixture = createHarmonyProjectFixture()
+  try {
+    assert.equal(await findHarmonyProjectRoot(fixture.source), fixture.root)
+    const project = await inspectHarmonyProject(fixture.source)
+    assert.equal(project.name, 'demo')
+    assert.equal(project.bundleName, 'com.example.demo')
+    assert.equal(project.versionName, '1.0.1')
+    assert.equal(project.defaultProduct, 'default')
+    assert.equal(project.defaultBuildMode, 'debug')
+    assert.equal(project.dependencies.hrouter, '^2.0.0')
+    assert.deepEqual(project.signingConfigs, [{ name: 'default', type: 'HarmonyOS', configured: true }])
+    assert.equal(project.modules.length, 1)
+    const module = project.modules[0]
+    assert.equal(module.type, 'entry')
+    assert.equal(module.mainElement, 'EntryAbility')
+    assert.deepEqual(module.deviceTypes, ['phone', 'tablet'])
+    assert.deepEqual(module.pages, ['pages/Index'])
+    assert.deepEqual(module.requestPermissions, ['ohos.permission.INTERNET'])
+    assert.equal(module.artifacts.length, 1)
+    assert.equal(module.sourceMaps[0].scriptCount, 1)
+    const serialized = JSON.stringify(project)
+    assert.equal(serialized.includes('secret-'), false)
+    assert.equal(serialized.includes('keyPassword'), false)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('Source Map VLQ decoding preserves generated/original deltas across lines', async () => {
+  assert.deepEqual(decodeVlqSegment('AACA').values, [0, 0, 1, 0])
+  assert.deepEqual(decodeVlqSegment('AADA').values, [0, 0, -1, 0])
+  const lines = decodeSourceMapMappings('AAAA,CAAC;AACA')
+  assert.equal(lines.length, 2)
+  assert.equal(lines[0][0].sourceLine, 0)
+  assert.equal(lines[0][1].generatedColumn, 1)
+  assert.equal(lines[0][1].sourceColumn, 1)
+  assert.equal(lines[1][0].sourceLine, 1)
+})
+
+test('Source Map index resolves .ets source breakpoints and reverse-maps frames in both directions', async () => {
+  const fixture = createHarmonyProjectFixture()
+  try {
+    const index = await loadHarmonySourceMapIndex(fixture.root)
+    assert.equal(index.scriptCount, 1)
+    const resolved = index.resolveSourceBreakpoint({
+      sourcePath: 'entry/src/main/ets/pages/Index.ets', sourceLine: 1, loadedScripts: new Set([fixture.url]),
+    })
+    assert.equal(resolved.url, fixture.url)
+    assert.equal(resolved.line, 1)
+    assert.equal(resolved.sourceLine, 2)
+    const frame = index.mapFrame({ index: 0, functionName: 'demo', url: fixture.url, lineNumber: 1, columnNumber: 0 })
+    assert.equal(frame.sourcePath, 'entry/src/main/ets/pages/Index.ets')
+    assert.equal(frame.sourceLine, 2)
+    assert.match(formatCallFrameLines([frame])[0], /Index\.ets:2/)
+    assert.match(formatCallFrameLines([frame])[0], /compiled: .*Index\.ts:2/)
+    const map = index.mapForUrl(fixture.url)
+    assert.equal(originalPositionFor(map, 1, 0).sourceLine, 1)
+    assert.equal(generatedPositionFor(map, fixture.root, fixture.source, 1, 0).generatedLine, 1)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('source breakpoint resolution moves to the next executable source line explicitly', async () => {
+  const fixture = createHarmonyProjectFixture()
+  try {
+    // Generated line 1 maps to original line 3 (0-based 2), leaving line 2 unmapped.
+    const parsed = JSON.parse(readFileSync(fixture.map, 'utf8'))
+    parsed[fixture.url].mappings = 'AAAA;AAEC'
+    writeFileSync(fixture.map, JSON.stringify(parsed))
+    const index = await loadHarmonySourceMapIndex(fixture.root)
+    const resolved = index.resolveSourceBreakpoint({ sourcePath: fixture.source, sourceLine: 1 })
+    assert.equal(resolved.line, 1)
+    assert.equal(resolved.sourceLine, 3)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('a source file newer than its Source Map is rejected instead of using stale line numbers', async () => {
+  const fixture = createHarmonyProjectFixture()
+  try {
+    const index = await loadHarmonySourceMapIndex(fixture.root)
+    const resolved = index.resolveSourceBreakpoint({ sourcePath: fixture.source, sourceLine: 1 })
+    writeFileSync(fixture.source, 'const a = 1\nconst changed = 2\nconst c = 3\n')
+    await assert.rejects(assertSourceBreakpointFresh(resolved, fixture.source, fixture.root), /尚未重新构建|比 Source Map 更新/)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('harmony_project agent tool defaults to the host workspace and returns the full model', async () => {
+  const fixture = createHarmonyProjectFixture()
+  try {
+    const tools = buildHarmonyAgentTools({ defineTool: (spec) => spec, host: { cwd: fixture.root, sessions: new Map() } })
+    assert.deepEqual(tools.map((tool) => tool.name), ['harmony_project', 'harmony_debug'])
+    const result = await tools[0].execute({})
+    assert.equal(result.ok, true)
+    assert.equal(result.project.root, fixture.root)
+    const rendered = tools[0].output.render({}, result)
+    assert.match(rendered[0].text, /com\.example\.demo/)
+    assert.match(rendered[0].text, /Source Map 1 份/)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('harmony_debug sets a source breakpoint with 1-based .ets input and returns 0-based ArkVM output', async () => {
+  const fixture = createHarmonyProjectFixture()
+  const session = new ArktsDebuggerSession({ pid: 4321, port: 5555, bundleName: 'com.example.demo' })
+  session.scripts.set(fixture.url, '7')
+  session.request = async (method, params) => {
+    if (method === 'Debugger.setBreakpointByUrl') {
+      return { ok: true, value: { breakpointId: `id:${params.lineNumber}:${params.columnNumber}:${params.url}`, locations: [{ id: 'ok', lineNumber: params.lineNumber }] } }
+    }
+    return { ok: true, value: {} }
+  }
+  const host = { cwd: fixture.root, sessions: new Map([[4321, session]]), hdc: async () => ({ ok: true }) }
+  const debug = buildHarmonyAgentTools({ defineTool: (spec) => spec, host }).find((tool) => tool.name === 'harmony_debug')
+  try {
+    const result = await debug.execute({ action: 'set_breakpoint', pid: '4321', source_path: 'entry/src/main/ets/pages/Index.ets', source_line: 2, project_path: fixture.root })
+    assert.equal(result.data.source.url, fixture.url)
+    assert.equal(result.data.source.line, 1)
+    assert.equal(result.data.source.sourceLine, 2)
+    assert.equal(session.breakpoints[0].sourcePath, 'entry/src/main/ets/pages/Index.ets')
+    assert.equal(session.breakpoints[0].requestedSourceLine, 2)
+    assert.match(result.message, /已设置源码断点/)
+
+    session._handleEvent('Debugger.paused', {
+      reason: 'other', hitBreakpoints: [session.breakpoints[0].breakpointId],
+      callFrames: [{ callFrameId: '1', functionName: 'demo', url: fixture.url, location: { scriptId: '7', lineNumber: 1, columnNumber: 0 } }],
+    })
+    const stack = await debug.execute({ action: 'stack', pid: '4321' })
+    assert.equal(stack.data.frames[0].sourcePath, 'entry/src/main/ets/pages/Index.ets')
+    assert.equal(stack.data.frames[0].sourceLine, 2)
+    assert.match(stack.data.stackLines[0], /Index\.ets:2/)
+  } finally {
+    session.close()
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('breakpoint notifications prefer the mapped .ets source location', async () => {
+  const fixture = createHarmonyProjectFixture()
+  try {
+    const index = await loadHarmonySourceMapIndex(fixture.root)
+    const session = new ArktsDebuggerSession({ pid: 4321, port: 5555, bundleName: 'com.example.demo' })
+    session.sourceMaps = index
+    session.ownerAgent = { id: 'source-session' }
+    const notices = []
+    installPauseNotifier(session, { notifyAgent: (notice) => { notices.push(notice); return Promise.resolve(true) } })
+    session._handleEvent('Debugger.paused', {
+      reason: 'break',
+      callFrames: [{ callFrameId: '1', functionName: 'demo', url: fixture.url, location: { scriptId: '7', lineNumber: 1, columnNumber: 0 } }],
+    })
+    assert.equal(notices.length, 1)
+    assert.match(notices[0].text, /entry\/src\/main\/ets\/pages\/Index\.ets:2/)
+    assert.match(notices[0].summary, /Index\.ets:2/)
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
 })

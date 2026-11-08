@@ -5,11 +5,11 @@
 // command construction, parsing and debugger sessions are exercised against a
 // connected emulator/device.
 //
-// Only `harmony_debug` is probed here: logs and app management are devecocli's
-// job (`devecocli log` / `devecocli device app`), so this plugin does not
-// re-implement them.
+// `harmony_project` is probed when --project is supplied. Logs and app
+// management remain devecocli's job (`devecocli log` / `devecocli device app`).
 //
-//   node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle io.duke.myapplication [--attach]
+//   node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle io.duke.myapplication \
+//     --project /path/to/app --source entry/src/main/ets/pages/Index.ets --source-line 296 --attach
 //
 // Exit code 0 = every requested step passed.
 
@@ -26,6 +26,9 @@ function arg (name, def) {
 
 const device = arg('device', '')
 const bundle = arg('bundle', '')
+const project = arg('project', '')
+const source = arg('source', '')
+const sourceLine = Number(arg('source-line', '1'))
 const wantAttach = process.argv.includes('--attach')
 
 function hdc (argv, timeoutMs = 20000) {
@@ -41,6 +44,7 @@ function hdc (argv, timeoutMs = 20000) {
 }
 
 const host = {
+  cwd: project || process.cwd(),
   sessions: new Map(),
   hdc,
   shell: (command, dev, timeout) => hdc([...(dev ? ['-t', dev] : []), 'shell', command], timeout),
@@ -67,10 +71,16 @@ async function run (label, fn) {
 
 const results = []
 
+if (project) {
+  step('harmony_project project model')
+  results.push(await run('project model', () => tools.get('harmony_project').execute({ path: project })))
+}
+
 if (wantAttach && bundle) {
   step('harmony_debug attach (wait-for-debugger launch)')
   const attached = await run('attach launch=true', () => tools.get('harmony_debug').execute({
     device, action: 'attach', package_name: bundle, launch: true,
+    ...(project ? { project_path: project } : {}),
   }))
   results.push(attached)
   if (attached.ok) {
@@ -79,14 +89,23 @@ if (wantAttach && bundle) {
     step('harmony_debug scripts')
     const scripts = await run('scripts', () => tools.get('harmony_debug').execute({ device, action: 'scripts', pid: String(pid), limit: 40 }))
     results.push(scripts)
-    step('harmony_debug breakpoint on first .ets script')
-    const first = scripts.ok && scripts.value.data && Array.isArray(scripts.value.data.scripts)
-      ? scripts.value.data.scripts.find((s) => /\.ets$/.test(s.url)) || scripts.value.data.scripts[0]
-      : null
-    if (first) {
-      results.push(await run('set_breakpoint ' + first.url, () => tools.get('harmony_debug').execute({
-        device, action: 'set_breakpoint', pid: String(pid), url: first.url, line: 5,
+    if (source) {
+      step(`harmony_debug source breakpoint ${source}:${sourceLine}`)
+      results.push(await run('set_breakpoint source mode', () => tools.get('harmony_debug').execute({
+        device, action: 'set_breakpoint', pid: String(pid),
+        source_path: source, source_line: sourceLine,
+        ...(project ? { project_path: project } : {}),
       })))
+    } else {
+      step('harmony_debug compiled breakpoint on first loaded script')
+      const first = scripts.ok && scripts.value.data && Array.isArray(scripts.value.data.scripts)
+        ? scripts.value.data.scripts[0]
+        : null
+      if (first) {
+        results.push(await run('set_breakpoint ' + first.url, () => tools.get('harmony_debug').execute({
+          device, action: 'set_breakpoint', pid: String(pid), url: first.url, line: 5,
+        })))
+      }
     }
     results.push(await run('stack', () => tools.get('harmony_debug').execute({ device, action: 'stack', pid: String(pid) })))
     results.push(await run('evaluate 1+1 (only meaningful while paused)', () => tools.get('harmony_debug').execute({
