@@ -338,19 +338,25 @@ async function attachSession (host, args, exec) {
     }
   }
 
-  const forwardFail = /\[Fail\]/i
+  const anyForwardFail = /\[Fail\]/i
+  const portListenFail = /\[Fail\]\s*TCP Port listen failed\b/i
   let port = 0
   for (let attempt = 0; attempt < 3; attempt++) {
     port = await pickFreePort()
-    const forwarded = await host.hdc(buildDebuggerForwardArgs(port, pid), 20000)
+    const forwarded = await host.hdc(buildDebuggerForwardArgs(port, pid, device), 20000)
+    const output = [forwarded.stdout, forwarded.stderr].filter(Boolean).join('\n').trim()
     if (!forwarded.ok) {
-      throw fail(`hdc fport 失败：${textOf(forwarded).slice(0, 600)}（检查 pid 是否仍存活、hdc 是否可用）`)
+      const detail = output || (forwarded.error && forwarded.error.message) || '未知错误'
+      throw fail(`hdc fport 失败：${detail.slice(0, 600)}（检查 pid 是否仍存活、hdc 是否可用）`)
     }
-    // `[Fail]TCP Port listen failed at <p>` means the local port was taken
-    // (stale rule / another session): retry on a fresh port instead of
-    // connecting into whatever owns that port.
-    if (!forwardFail.test(textOf(forwarded))) break
-    await host.hdc(buildDebuggerForwardRemoveArgs(port, pid), 8000).catch(() => {})
+    if (!anyForwardFail.test(output)) break
+    // Only this exact failure means the local port was taken (stale rule /
+    // another session). Other [Fail] responses (bad device, missing ark
+    // target, ...) are deterministic errors: preserve them and do not retry.
+    if (!portListenFail.test(output)) {
+      throw fail(`hdc fport 失败：${output.slice(0, 600)}`)
+    }
+    await host.hdc(buildDebuggerForwardRemoveArgs(port, pid, device), 8000).catch(() => {})
     port = 0
   }
   if (!port) throw fail('无法分配可用的本地端口用于 hdc fport：多次 `TCP Port listen failed`，请检查是否有残留的 fport 规则（hdc fport ls）。')
@@ -380,7 +386,7 @@ async function attachSession (host, args, exec) {
     await session.waitForEntry(2500)
   } catch (error) {
     session.close()
-    await host.hdc(buildDebuggerForwardRemoveArgs(port, pid), 15000).catch(() => {})
+    await host.hdc(buildDebuggerForwardRemoveArgs(port, pid, device), 15000).catch(() => {})
     throw fail(`${error && error.message ? error.message : String(error)}（提示：同一 ark 目标同一时刻只允许一个调试客户端，DevEco 调试会话开着时会连接不上）`)
   }
   // This attach result carries the current pause inline.
@@ -560,7 +566,7 @@ function buildHarmonyDebugTool (defineTool, host) {
         const session = sessionFor(host, args.pid)
         session.close()
         host.sessions.delete(session.pid)
-        const removed = await host.hdc(buildDebuggerForwardRemoveArgs(session.port, session.pid), 15000)
+        const removed = await host.hdc(buildDebuggerForwardRemoveArgs(session.port, session.pid, session.device), 15000)
         return debugResult('detach', session, {
           message: `已断开（fport 清理${removed.ok ? '成功' : '失败'}）。注意：调试模式启动的应用在调试器断开后可能被系统结束。`,
           data: { forwardRemoved: removed.ok },

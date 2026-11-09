@@ -37,16 +37,18 @@ export function debuggerForwardTarget (pid) {
 }
 
 /**
- * `hdc fport` argv for the ArkTS debugger (two-segment form, verified).
- * @param {number} port @param {number} pid @returns {string[]}
+ * `hdc [-t <device>] fport` argv for the ArkTS debugger (two-segment form, verified).
+ * @param {number} port @param {number} pid @param {string} [device] @returns {string[]}
  */
-export function buildDebuggerForwardArgs (port, pid) {
-  return ['fport', `tcp:${port}`, debuggerForwardTarget(pid)]
+export function buildDebuggerForwardArgs (port, pid, device) {
+  const target = device ? ['-t', String(device)] : []
+  return [...target, 'fport', `tcp:${port}`, debuggerForwardTarget(pid)]
 }
 
-/** `hdc fport rm` argv that removes exactly the rule above. */
-export function buildDebuggerForwardRemoveArgs (port, pid) {
-  return ['fport', 'rm', `tcp:${port}`, debuggerForwardTarget(pid)]
+/** `hdc fport rm` argv that removes exactly the rule above on the same device. */
+export function buildDebuggerForwardRemoveArgs (port, pid, device) {
+  const target = device ? ['-t', String(device)] : []
+  return [...target, 'fport', 'rm', `tcp:${port}`, debuggerForwardTarget(pid)]
 }
 
 /**

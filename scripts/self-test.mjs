@@ -1646,10 +1646,18 @@ test('buildStartAbilityCommand validates names and supports debug', () => {
 // harmony-debugger：ArkTS 调试协议的纯函数（协议形状来自实测报文）
 // ---------------------------------------------------------------------------
 
-test('debugger forward targets use the ark:<pid>@Debugger form', () => {
+test('debugger forward targets use the ark:<pid>@Debugger form and preserve the selected device', () => {
   assert.equal(debuggerForwardTarget(3308), 'ark:3308@Debugger')
   assert.deepEqual(buildDebuggerForwardArgs(19011, 3308), ['fport', 'tcp:19011', 'ark:3308@Debugger'])
   assert.deepEqual(buildDebuggerForwardRemoveArgs(19011, 3308), ['fport', 'rm', 'tcp:19011', 'ark:3308@Debugger'])
+  assert.deepEqual(
+    buildDebuggerForwardArgs(19011, 3308, '127.0.0.1:5555'),
+    ['-t', '127.0.0.1:5555', 'fport', 'tcp:19011', 'ark:3308@Debugger'],
+  )
+  assert.deepEqual(
+    buildDebuggerForwardRemoveArgs(19011, 3308, '127.0.0.1:5555'),
+    ['-t', '127.0.0.1:5555', 'fport', 'rm', 'tcp:19011', 'ark:3308@Debugger'],
+  )
 })
 
 test('isDebuggerError detects ArkVM errors carried inside result', () => {
@@ -2305,6 +2313,61 @@ test('harmony_project agent tool defaults to the host workspace and returns the 
     assert.match(rendered[0].text, /Source Map 1 份/)
   } finally {
     rmSync(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('harmony_debug attach scopes fport to the selected device and does not retry non-port failures', async () => {
+  const calls = []
+  const host = {
+    sessions: new Map(),
+    hdc: async (argv) => {
+      calls.push(argv)
+      return { ok: true, stdout: '[Fail]Device not found', stderr: '' }
+    },
+    shell: async () => ({
+      ok: true,
+      stdout: 'com.example.demo:\n{"applicationInfo":{"appProvisionType":"debug"}}',
+      stderr: '',
+    }),
+  }
+  const debug = buildHarmonyAgentTools({ defineTool: (spec) => spec, host }).find((tool) => tool.name === 'harmony_debug')
+  await assert.rejects(
+    debug.execute({ action: 'attach', device: '127.0.0.1:5555', package_name: 'com.example.demo', pid: '4321' }),
+    (error) => {
+      assert.match(error.message, /\[Fail\]Device not found/)
+      assert.doesNotMatch(error.message, /多次 `TCP Port listen failed`/)
+      return true
+    },
+  )
+  assert.equal(calls.length, 1, 'a deterministic hdc failure must not trigger port retries or cleanup')
+  assert.deepEqual(calls[0].slice(0, 3), ['-t', '127.0.0.1:5555', 'fport'])
+  assert.match(calls[0][3], /^tcp:\d+$/)
+  assert.equal(calls[0][4], 'ark:4321@Debugger')
+})
+
+test('harmony_debug attach retries only port listen failures and cleans up on the same device', async () => {
+  const calls = []
+  const host = {
+    sessions: new Map(),
+    hdc: async (argv) => {
+      calls.push(argv)
+      return { ok: true, stdout: '[Fail]TCP Port listen failed at 19011', stderr: '' }
+    },
+    shell: async () => ({
+      ok: true,
+      stdout: 'com.example.demo:\n{"applicationInfo":{"appProvisionType":"debug"}}',
+      stderr: '',
+    }),
+  }
+  const debug = buildHarmonyAgentTools({ defineTool: (spec) => spec, host }).find((tool) => tool.name === 'harmony_debug')
+  await assert.rejects(
+    debug.execute({ action: 'attach', device: '127.0.0.1:5555', package_name: 'com.example.demo', pid: '4321' }),
+    /多次 `TCP Port listen failed`/,
+  )
+  assert.equal(calls.length, 6, 'three forwards plus three best-effort removals')
+  assert.equal(calls.filter((argv) => argv.includes('rm')).length, 3)
+  for (const argv of calls) {
+    assert.deepEqual(argv.slice(0, 3), ['-t', '127.0.0.1:5555', 'fport'])
   }
 })
 

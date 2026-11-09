@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-09
+
+### Fixed
+
+- `harmony_debug` 的 `hdc fport` / `fport rm` 在 attach、重试清理、detach 与插件销毁时均携带 `-t <device>`，不再丢失显式选择的模拟器/设备。
+- 仅 `TCP Port listen failed` 会触发换端口重试；其他 `[Fail]` 立即返回 hdc 原始错误，不再误报为端口占用。
+
+### Validation
+
+- 140 项单元测试通过；语法检查与打包检查通过。
+- 断点通知端到端探针 20/20 通过；本次未执行真实模拟器在线调试。
+
+### 📦 安装
+
+```bash
+dsh plugin --profile web add @duke-dsh-plugins/dsh-deveco
+```
+
+也可使用本 Release 附件中的 tgz 包。安装后必须重启 DSH 生效。
+
 ## [0.7.0] - 2026-11-08
 
 ### Changed

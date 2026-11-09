@@ -575,7 +575,7 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       for (const [, session] of this._debugSessions) {
         try { session.close(); } catch (_) { /* */ }
         try {
-          this._hdcRun(buildDebuggerForwardRemoveArgs(session.port, session.pid), 8000).catch(() => {});
+          this._hdcRun(buildDebuggerForwardRemoveArgs(session.port, session.pid, session.device), 8000).catch(() => {});
         } catch (_) { /* */ }
       }
       this._debugSessions.clear();

@@ -171,9 +171,10 @@ const fakeArkVm = new FakeArkVm()
 const host = {
   sessions: new Map(),
   async hdc (argv) {
+    const args = Array.isArray(argv) && argv[0] === '-t' ? argv.slice(2) : argv
     // fport tcp:<port> ark:<pid>@Debugger → 在插件挑中的那个端口上起假 ArkVM
-    if (Array.isArray(argv) && argv[0] === 'fport' && String(argv[1] || '').startsWith('tcp:')) {
-      const port = Number(String(argv[1]).slice(4))
+    if (Array.isArray(args) && args[0] === 'fport' && String(args[1] || '').startsWith('tcp:')) {
+      const port = Number(String(args[1]).slice(4))
       await fakeArkVm.listen(port)
     }
     return { ok: true, stdout: 'success', stderr: '' }
