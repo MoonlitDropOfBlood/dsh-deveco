@@ -11,7 +11,7 @@
   - **ArkUI Inspector**（id `dsh-deveco:arkui`，guide order 51）：**Chrome Elements 风格**——左侧设备截图（`uiScreenshot` 内联 dataUrl，点击截图命中节点并以**像素级 overlay** 按 `origBounds` 真实矩形高亮），右上 **可折叠** UI 树（层级引导线 + 自定义组件单独标注 + tap/scroll 标记 + 折叠全部/展开全部 + **树搜索**），右下节点属性（**全部设备原始属性** + **属性名/值搜索**）与盒子模型；顶部**窗口下拉**切换窗口；底部 Tap/Swipe/Text 操作
   - **Projects 数据面**：`listProjects` 识别 Host 工作目录中的 HarmonyOS 工程并保持紧凑 Remote 契约；完整工程模型走 agent 工具 `harmony_project`（当前无独立 Projects 图形页）
 - **官方右侧边栏注册 `.ets` 文件查看器**（id `dsh-deveco:arkts`，`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤，priority `extension` 优先于内置 text editor）。提供 ArkTS 语法高亮（关键字 + 装饰器 + 注释 + 字符串 + 数字）；内容经官方 `remote.workspaceFiles.read` 分页读取（绝对路径回退插件自有 `readTextFile` Remote）。
-- **给对话里的 agent 提供工程模型与 ArkTS 运行时调试器**（`ctx.tools` 的 `harmony_project` / `harmony_debug`）：工程根/模块/Ability/权限/产物只读解析；调试支持 Hvigor Source Map 驱动的 `.ets` 源码断点与源码调用栈，底层通道＝`hdc fport ark:<pid>@Debugger` + 裸 socket 6 头 WS + CDP 风格 JSON-RPC，与 DevEco Studio 同款。**不重复造 devecocli 的轮子**：日志走 `devecocli log`，应用管理走 `devecocli device app`，UI 树走本插件的 `harmony_ui_tree`。
+- **给对话里的 agent 提供工程模型、ArkTS 运行时调试器与 ArkWeb DOM 读取**（`ctx.tools` 的 `harmony_project` / `harmony_debug` / `harmony_web_dom`）：工程根/模块/Ability/权限/产物只读解析；调试支持 Hvigor Source Map 驱动的 `.ets` 源码断点与源码调用栈，底层通道＝`hdc fport ark:<pid>@Debugger` + 裸 socket 6 头 WS + CDP 风格 JSON-RPC，与 DevEco Studio 同款；Web DOM 走 `localabstract:webview_devtools_remote_<pid>` + 标准 Chromium CDP。**不重复造 devecocli 的轮子**：日志走 `devecocli log`，应用管理走 `devecocli device app`，ArkUI 树走本插件的 `harmony_ui_tree`；devecocli 没有 Web DOM 能力，由本插件补齐。
 - **设置面板新增「HarmonyOS Suite」页**（`settings.section`，order 40），分「工具链」「设备管理」两区。工具链区管理 DevEco Studio 与 HarmonyOS Command Line Tools 路径（三平台自发现、Studio/CLT 互斥、CLT 最低版本 26.0.0 校验）；设备管理区含**设备列表**（USB/网络目标，网络 `ip:port` 目标可一键断开）与 **IP 网络连接**表单（`hdc tconn <ip>:<port>`）。
 
 ## 目录结构
@@ -19,7 +19,7 @@
 ```
 dsh-deveco/
 ├── package.json              # ESM 双面包：dsh.bundle.patch + dsh.client.web + exports(., /client, /typert, /package.json)
-├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，22 个 Remote 方法 + harmony_ui_tree/harmony_project/harmony_debug 注册）
+├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，24 个 Remote 方法 + harmony_ui_tree/harmony_project/harmony_debug/harmony_web_dom 注册）
 ├── client.js                 # Client 半：__ModuleLoader__ bundle（Tab + Viewer + Settings + Remote mount）
 ├── typert.host.js            # Typert Host manifest：harmonyDevEco Remote 服务全部 invocation 的 zod schema
 ├── harmony-studio.mjs        # 零依赖：工具链路径探测（devecocli > CLT ≥26.0.0 > Studio）+ 版本解析 + 三平台默认路径
@@ -27,16 +27,20 @@ dsh-deveco/
 ├── harmony-device.mjs        # 零依赖：devecocli 进程封装 + hdc 降级命令（list targets / hilog / hidumper / uitest / screenCap）+ IP 连接（tconn）+ HiLog/ui-layout JSON 解析 + 裸 WS 帧编解码
 ├── harmony-tools.mjs         # 零依赖：调试器所需的设备命令构造/解析（bm dump 签名探测、aa appdebug/start/force-stop、ps -ef）+ 注入安全（shellQuote + 白名单正则）
 ├── harmony-debugger.mjs      # 零依赖：ArkTS 运行时调试器会话（裸 socket WS + CDP 风格 JSON-RPC；断点/暂停/单步/求值/属性；帧展示支持源码投影）
+├── harmony-webdevtools.mjs   # ArkWeb DevTools：socket/目标解析 + 一次性标准 CDP 会话 + DOM 扁平化/整子树截断 + 有界 outerHTML
 ├── harmony-project.mjs       # JSON5：HarmonyOS 应用根发现、产品/模块/Ability/权限/依赖/产物模型；签名材料脱敏
 ├── harmony-source-map.mjs    # 零依赖：Hvigor Source Map v3 VLQ 解码、源码断点定位与调用栈反解
-├── harmony-agent-tools.mjs   # agent 工具定义（harmony_project / harmony_debug），执行经 host 端口注入
+├── harmony-agent-tools.mjs   # agent 工具定义（harmony_project / harmony_debug / harmony_web_dom），执行经 host 端口注入
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 138 个独立核心单元测试（含工程模型、Source Map 与源码断点/通知）
+├── scripts/self-test.mjs     # 153 个独立核心单元测试（含工程模型、Source Map、源码断点/通知与 Web DOM）
 ├── scripts/e2e-agent-tools.mjs  # 模拟器跑 agent 工程/调试工具的端到端探针（不依赖 DSH）
 ├── scripts/e2e-source-map.mjs   # 真实 Hvigor 工程 Source Map 双向映射探针（不依赖设备/DSH）
 ├── scripts/e2e-breakpoint-notify.mjs  # 断点通知链路端到端探针（假 ArkVM 服务端，不依赖设备/DSH）
+├── scripts/cdp-fixture.mjs           # 假 Chromium DevTools 服务（HTTP /json + RFC6455 WS + 最小 DOM 域）
+├── scripts/e2e-web-dom.mjs           # Web DOM 端到端探针（假 CDP，不依赖设备/DSH）
 ├── scripts/extract-release-notes.mjs # 按发布标签提取 CHANGELOG 对应版本段落（缺失/重复/为空即失败）
 ├── docs/arkts-debug-recon.md        # ArkTS 调试协议与 Source Map 实测调研（每条结论带证据与置信度）
+├── docs/arkweb-web-dom-recon.md      # ArkWeb Web DOM 真机实测（Chrome/144、节点计数与 fport 踩坑）
 ├── docs/recon-scripts/               # 调研用探针（arkts-debug-probe*.mjs、jar 常量池提取脚本）
 ├── .github/workflows/release.yml  # v* tag → 构建 + 发布 GitHub Release（正文取 CHANGELOG 对应版本）
 ├── CHANGELOG.md                # 版本变更记录与 GitHub Release 正文来源
@@ -106,7 +110,7 @@ function unwrap(res) {
 
 Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, message } }`。
 
-### 5. 22 个 Remote 方法
+### 5. 24 个 Remote 方法
 
 | 方法 | 用途 |
 |---|---|
@@ -130,6 +134,8 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 | `uiTap` | 点击 |
 | `uiSwipe` | 滑动 |
 | `uiText` | 输入文本 |
+| `webTargets` | ArkWeb DevTools 目标发现：解析 `/proc/net/unix` 的 `webview_devtools_remote_<pid>`，逐个临时 fport 后 `GET /json`，返回 `{id,type,title,url,pid,socketName,packageName?}`；不返回设备侧旧 websocket 地址 |
+| `webDomRead` | 对指定 ArkWeb target 走标准 Chromium CDP `DOM.getDocument` / `querySelector` / `describeNode` / `getOuterHTML`，返回有界扁平 DOM 或 outerHTML；一次性会话，`finally` 只删本次 fport 规则 |
 | `listProjects` | 识别 Host cwd 中的鸿蒙应用根，按既有 schema 返回 `{name,path,bundleName,moduleCount}`；完整模型用 `harmony_project` |
 | `readTextFile` | 读取 UTF-8 文本文件（2 MiB 截断），.ets 查看器绝对路径回退用 |
 
@@ -179,16 +185,17 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 - **实现复用**：工具走 `service._fetchDevEcoTree()`（rich：nodes + source + pid + packageName）；Remote `uiDevEcoTree` 是它的薄包装（严格按 TYPERT 契约只回 `{nodes, source}`）。同一份取树链路两面共用。
 - **边界同 DevEco 调试源**：需 debug 应用 + IDE Inspector 面板未占用（单客户端）；失败时抛错（registry 转 isError 文本），错误信息含全部前置条件指引。`isConcurrencySafe: true`（只读无共享状态，可并行）。
 
-### 10. Agent 工程与调试工具面（v0.6.0 合并）
+### 10. Agent 工程、调试与 Web DOM 工具面
 
-Host 经 `buildHarmonyAgentTools` 注册 `harmony_project` 与 `harmony_debug`：**命令构造/解析/工程模型/Source Map/会话状态机全在 `harmony-*.mjs` 模块里**，`index.js` 只提供 cwd 与设备传输（`host.hdc` / `host.shell` / `host.sessions`），因此可脱离 DSH 单测。工具默认工程路径优先取 `exec.agent.session.header.cwd`，显式 `path` / `project_path` 优先。
+Host 经 `buildHarmonyAgentTools` 注册 `harmony_project`、`harmony_debug` 与 `harmony_web_dom`：**命令构造/解析/工程模型/Source Map/会话状态机/Web DOM 归一化全在 `harmony-*.mjs` 模块里**，`index.js` 只提供 cwd 与设备传输（`host.hdc` / `host.shell` / `host.sessions` / `host.webTargets` / `host.webDomRead`），因此可脱离 DSH 单测。工具默认工程路径优先取 `exec.agent.session.header.cwd`，显式 `path` / `project_path` 优先。
 
 | 工具 | 动作 | 底层 |
 |---|---|---|
 | `harmony_project` | path 可为工程根或内部任意路径 | `harmony-project.mjs`：JSON5 配置 + 模块/产物模型，签名脱敏 |
 | `harmony_debug` | attach / status / scripts / set_breakpoint / remove_breakpoint / breakpoints / pause / resume / step / run / stack / evaluate / properties / exceptions / events / notify / detach | **ArkTS 运行时调试器 + Hvigor Source Map**（见 §10.2 / §11） |
+| `harmony_web_dom` | targets / snapshot | **ArkWeb Chromium CDP**（见 §10.3）；只读，不执行页面 JS |
 
-- **不重复造 devecocli 的轮子（用户决策）**：`devecocli log` 已覆盖日志（`--level/--keyword/--bundle-name/--tail/--format json/--follow`），`devecocli device app` 已覆盖 list/info/start/stop/install/uninstall（`device app info --format json` 里就有 `applicationInfo.appProvisionType`＝debug 签名判定），`devecocli ui layout` 覆盖布局树。**因此不提供 `harmony_hilog` / `harmony_app` 工具**——agent 直接跑 CLI 即可；插件只补 devecocli 没有的那块：**ArkTS 运行时调试器**。
+- **不重复造 devecocli 的轮子（用户决策）**：`devecocli log` 已覆盖日志（`--level/--keyword/--bundle-name/--tail/--format json/--follow`），`devecocli device app` 已覆盖 list/info/start/stop/install/uninstall（`device app info --format json` 里就有 `applicationInfo.appProvisionType`＝debug 签名判定），`devecocli ui layout` 覆盖布局树。**因此不提供 `harmony_hilog` / `harmony_app` 工具**——agent 直接跑 CLI 即可；插件只补 devecocli 没有的那块：**ArkTS 运行时调试器与 Web DOM 读取**。
 - **工具描述里要点明分工**（`harmony_debug.description` 末段）：日志走 `devecocli log`、应用管理走 `devecocli device app`、UI 树走 `harmony_ui_tree`——避免 agent 在三处重复试探。
 - **`harmony_debug` 需要的两个非 devecocli 事实**由工具内部自己解决：① **debug 签名判定**（`bm dump -n` → `applicationInfo.appProvisionType == "debug"`；stage 模型应用的 mainAbility 在 `hapModuleInfos[]` 里，**顶层没有 `mainElementName`**，2026-11 实测踩过）；② **wait-for-debugger 启动**（`aa appdebug` → `aa force-stop` → `aa start -D`）。
 
@@ -222,6 +229,19 @@ Host 经 `buildHarmonyAgentTools` 注册 `harmony_project` 与 `harmony_debug`�
 - **参数坐标严格分离**：源码 `source_path` + **1 基** `source_line/source_column`；兼容编译 `url` + **0 基** `line/column`。精确源码行优先；无精确映射才移到下一可执行行，并在结果/message 里报告实际行。多个 URL 有候选且没有已加载脚本可消歧时直接报错。
 - **过期保护**：源文件 mtime 新于所选 Source Map 时拒绝设源码断点，提示先 build/run。没有 map、JSON 损坏、超过 32 MiB 都明确警告/报错。
 - **会话级索引**：attach 时按当前 agent workspace/project_path 加载，保存在 `session.sourceMaps`；通知回调不做异步 I/O，直接同步映射当前帧。`attach/status/pause/step/stack` 与自动通知共享同一投影，帧保留原 `url/lineNumber/columnNumber` 并增加 `sourcePath/sourceLine/sourceColumn`。
+
+### 10.3 ArkWeb Web DOM（`harmony_web_dom` / `webTargets` / `webDomRead`）
+
+- **独立第三条调试通道**：`webview_devtools_remote_<pid>`（设备 `/proc/net/unix` 可见）→ `hdc fport tcp:<local> localabstract:<socket>` → `GET /json` → 标准 WebSocket `/devtools/page/<targetId>` → Chromium `DOM.*`。与 `ark:<pid>@Debugger`（ArkVM）和 `ark:<pid>@<pkg>`（ArkUI Inspector）**不共用协议、端口规则或会话状态**。
+- **2026-11-11 真机实测**（HUAWEI Mate 70、ArkWeb/7.0.0.111、Chrome/144、`com.jfzt.uranus`）：`/json` 单 page target、Node 24 内置 WebSocket 直接可用且无 `Origin`、`DOM.getDocument/querySelector/describeNode/getOuterHTML` 全部可用；全页 133 节点 / 122KB HTML，`body` 子树 74 节点。完整记录见 `docs/arkweb-web-dom-recon.md`。
+- **前置条件与应用侧开关**：应用必须调用 `webview.WebviewController.setWebDebuggingAccess(true)`、声明 `ohos.permission.INTERNET`、Web 组件已加载页面；设备 ≥4.1.0。**不需要** `aa attach`、debug 签名或 ArkUI inspector 空闲；API 20 的无线调试端口是后续扩展，不在此实现。
+- **目标发现**：`parseWebDebugSockets` 解析 socket 名与 pid；`fetchDevToolsJson` 只允许 loopback `127.0.0.1` 与 `/json*` 路径；`parseDevToolsTargets` 只返回 id/type/title/url/description，**不返回设备侧 `webSocketDebuggerUrl`**（本地 fport 端口变化后它会过期）。`selectWebTarget` 显式 id 优先，否则仅在唯一 page/webview target 时自动选，多目标返回 `ambiguous-target`。
+- **DOM 读取**：`DOM.getDocument`（默认 depth=8、`pierce:true`）→ 可选 `DOM.querySelector` + `DOM.describeNode` → `normalizeWebDom` 扁平化；`includeHtml` 才调用 `DOM.getOuterHTML`（2 MiB 截断）。`DOM.getDocument` 的 depth 默认是 **1**，必须显式传；CDP nodeId 只在当前连接/文档版本有效，**不跨调用缓存**。
+- **截断不变量**：`maxNodes`（默认 400，上限 4000）与 `maxDepth`（上限 32）都按**整棵子树**省略；边界父节点带 `childrenOmitted`/`hiddenDirect`，`childCount` 保留 CDP `childNodeCount`（尤其 depth 截断时不能把节点误报为叶子）。CDP 自身 depth 截断留下的 childCount 缺口也按 hiddenDirect 标注。
+- **连接生命周期**：每次 `webDomRead` 都是一次性会话，`finally` 关闭 WebSocket 并用 `hdc fport rm tcp:<p> localabstract:<socket>` **只删本次规则**。官方脚本「先删所有 fport」**禁止照抄**，会踢掉 ArkTS/ArkUI 规则。端口被占换端口重试 ≤3 次。
+- **协议判定**：Chromium 用顶层 `error`（标准 JSON-RPC），**不是** ArkVM 的 `result.code`；不要复刻 ArkTS 调试器的错误判断。Node 24 内置标准 WebSocket 可用；Sim 的握手不带 `Origin`（已由 fixture 断言）。
+- **安全边界**：只读 DOM，不开放任意 `Runtime.evaluate`，不修改页面；页面 URL/title/attributes/text 都是不可信外部数据，agent 只能当数据使用。iframe/shadow DOM 由 `pierce` 尽力覆盖，OOPIF/多 target 需要单独 target；真机只验证了单 Web 组件，多 Web/OOPIF/导航/Chrome 并发仍待覆盖。
+- **真机踩坑**：`DOM.describeNode` 的子树根有真实 nodeId，但未 push 的后代 `nodeId=0`——原始节点计数只能按对象身份，不能按 nodeId 去重；`DOM.getOuterHTML` 对 Document 根改取 documentElement；一次性 fport 回调必须重新包成 `{ok:true,value}`。详见实测记录。
 
 ### 11. ArkTS 运行时调试器（实测链路，docs/arkts-debug-recon.md 有完整证据）
 
@@ -270,10 +290,12 @@ Host 经 `buildHarmonyAgentTools` 注册 `harmony_project` 与 `harmony_debug`�
 
 ```bash
 npm run check              # 全部 JS 语法检查（含工程模型/Source Map/e2e 模块）
-npm test                   # 138 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知）
+npm test                   # 153 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP）
 node scripts/e2e-source-map.mjs --project <root> --source entry/src/main/ets/pages/Index.ets --line 296  # 真实 Hvigor Source Map 双向验证（不依赖设备/DSH）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --project <root> --source entry/src/main/ets/pages/Index.ets --source-line 296 --attach   # 模拟器跑工程 + 源码断点工具（不依赖 DSH）
 npm run e2e:notify             # 断点通知链路端到端（**不依赖设备**：假 ArkVM 服务端 + 真会话 + 真工具 + 真 Host 投递）
+npm run e2e:webdom             # Web DOM 端到端（**不依赖设备**：假 Chromium HTTP /json + RFC6455 WS + 真 CDP 会话）
+node scripts/e2e-web-dom.mjs   # 同上，直接执行
 node docs/recon-scripts/arkts-debug-probe-skip.mjs --bundle <pkg>    # 探针：setSkipAllPauses 能不能压掉逐脚本启动暂停
 node docs/recon-scripts/arkts-debug-probe-break.mjs --bundle <pkg>   # 探针：skip=false 后断点是否仍命中（配 devecocli ui click 触发）
 dsh plugin --profile web add .   # 本地安装/重装
@@ -292,6 +314,7 @@ dsh plugin --profile web add .   # 本地安装/重装
 8. 打开任意 `.ets` 文件 → ArkTS 高亮查看器打开（文件名作为 tab 标题）
 9. 工程与源码调试：调用 `harmony_project` 能返回应用/模块/Ability/权限且不含签名材料；有 map 时 `harmony_debug` 用 `source_path + source_line` 返回源码断点，暂停通知/stack 显示 `.ets` 并保留编译坐标
 10. 设置页「设备管理」区：设备列表出现（或空态文案）→ IP 连接后列表出现「网络」徽章的 ip:port 目标 → 点行内「断开」→ 列表自动刷新
+11. Web DOM（真机/模拟器）：应用开启 `setWebDebuggingAccess(true)` 并加载页面 → agent 调用 `harmony_web_dom(action="targets")` 能看到 target → `snapshot` 用 CSS 选择器读取节点/属性/outerHTML → 页面导航后旧 target 失效时重新发现 → 操作结束后 `hdc fport ls` 无本插件残留规则
 
 ## 发布
 

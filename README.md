@@ -16,7 +16,7 @@
 
 ---
 
-为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web UI 打造的 **HarmonyOS 全栈开发套件**插件：HiLog 检查器、Chrome DevTools 风格 ArkUI Inspector（截图点选 + 组件树 + 盒模型声明值 + 自定义组件名）、ArkTS 语法高亮 .ets 查看器、工具链与设备管理，以及对话内 agent 可直接调用的 `harmony_project` / `harmony_ui_tree` / `harmony_debug` 工具。
+为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) Web UI 打造的 **HarmonyOS 全栈开发套件**插件：HiLog 检查器、Chrome DevTools 风格 ArkUI Inspector（截图点选 + 组件树 + 盒模型声明值 + 自定义组件名）、ArkTS 语法高亮 .ets 查看器、工具链与设备管理，以及对话内 agent 可直接调用的 `harmony_project` / `harmony_ui_tree` / `harmony_debug` / `harmony_web_dom` 工具。
 
 > **兼容性**：支持 DSH **`^0.2.0-rc.1`**（0.2.x；本插件深度依赖 0.2.0 API——官方右侧边栏 `sidebarRightTabs`、设置页、agent 工具 `ctx.tools`，**0.1.x 无右侧边栏，不受支持**）。`engines.dsh` 与 peerDependencies 同步声明。发布走 GitHub `v*` 标签 → Actions 自动构建测试 + GitHub Release + npm（`@duke-dsh-plugins` 组织，OIDC Trusted Publishing）。
 
@@ -30,6 +30,13 @@
 ### Agent 工具（对话内可调用）
 - **`harmony_project`**：只读解析真实 DevEco/Hvigor 工程（JSON5），从工程内任意路径向上定位应用根，返回 bundle/版本、products/build modes、模块/targets、Ability/ExtensionAbility、权限、页面、依赖、HAP/HSP/HAR/APP 构建产物及 Source Map 清单。省略 `path` 时使用当前 agent 工作区；签名配置只返回名称/类型/完整性，不暴露证书路径、别名或密码。
 - **`harmony_ui_tree`**：把 DevEco 调试源取树注册为 DSH 的 agent 工具（`ctx.tools`），对话里的 agent 可直接调用，返回**缩进树文本**（或 `format=json` 完整节点）——节点含组件名、bounds、文本与 **padding/margin/border 声明值**；JSON 中每个节点带裁剪前原始直接子节点数 `childCount`（裁剪为叶子也不归零）。Swiper 在 `displayCount` 未配置或 ≤1 时只完整展开 `currentIndex` 页，其他页保留一层（`TabContent` 两层），`displayCount>1` 时不裁剪。支持 `device` / `pid` / `package_name` 定位目标、`include_attrs` 附带全部原始属性、`max_nodes` 截断保护。前置条件同 DevEco 调试源（debug 应用、DevEco Inspector 面板未占用）。
+- **`harmony_web_dom`**：读取 **ArkWeb（HarmonyOS Web 组件）页面的真实 DOM**，走 ArkWeb 自带的 Chromium DevTools Protocol，不依赖 uitest/ArkUI Inspector/Chrome 中间页。
+  - `action="targets"` 枚举 `webview_devtools_remote_<pid>` 进程与可调试页面（id / type / title / url / pid / 包名）。
+  - `action="snapshot"` 读取指定 target 的 DOM；支持 CSS `selector` 定位子树、`depth` / `max_nodes` 有界裁剪、`include_attrs` 返回全部属性、`include_html` / `format="html"` 返回 outerHTML。
+  - 截断保持「整棵子树省略」语义：边界父节点带 `childrenOmitted` 与 `hiddenDirect`，`childCount` 保留 CDP 原始直接子节点数，不会被误报为叶子。
+  - 只读：不执行页面 JavaScript，不修改 DOM；页面标题、URL、属性和文本均是不可信网页数据。
+  - 前置条件：应用调用 `webview.WebviewController.setWebDebuggingAccess(true)`、声明 `ohos.permission.INTERNET`、Web 页面已加载、设备 ≥ 4.1.0。**不需要** `aa attach`、debug 签名或 ArkUI inspector 会话。
+  - 当前能力先以 Remote + agent 工具提供；ArkUI Inspector 的节点模型/设备像素 overlay 不混用 Web DOM。
 - **`harmony_debug`**：**ArkTS 运行时调试器**（与 DevEco Studio 同款通道：`hdc fport ark:<pid>@Debugger` + 裸 socket WebSocket + CDP 风格 JSON-RPC）。动作：`attach`（`launch=true` 走已验证的 wait-for-debugger 流程：`aa appdebug` → force-stop → `aa start` → fport → 握手 → `Runtime.runIfWaitingForDebugger`）、`status` / `scripts`（已加载脚本 url，断点必须逐字匹配）、`set_breakpoint` / `remove_breakpoint` / `breakpoints`、`pause` / `resume` / `step`（over/into/out）、`run`、`stack`（调用栈）、`evaluate`（暂停帧求值——该 runtime 不支持 `Runtime.evaluate`）、`properties`（展开远程对象）、`exceptions`（none/uncaught/all）、`events`、`notify`（开关自动通知）、`skip_pauses`（开关 runtime 的「跳过暂停」启动快进）、`detach`。**应用停在断点/异常暂停时，会话会自动收到一条通知**（暂停位置 + 调用栈 + 下一步建议），agent 不必轮询 `status`；自己触发的暂停（attach 入口暂停、`pause`、`step`）由工具结果内联回报，不会重复通知。**启动期默认跳过 ArkVM 的逐脚本暂停**（`Debugger.setSkipAllPauses`，实测 55 个脚本 = 55 次「Break on start」会让 app 卡在启动页）；设断点 / `pause` / `step` 会自动关掉它。**推荐源码断点**：`source_path` + 1 基 `source_line`（可选 1 基 `source_column`、`project_path`、`build_mode`），通过真实 Hvigor Source Map v3 定位 ArkVM 编译 URL/0 基位置；空白行会明确移动到下一可执行映射，源文件比映射新时拒绝使用旧映射。`attach/status/stack/step` 与自动暂停通知都会把帧反解为 `.ets` 位置，同时保留编译位置。旧的 `url` + 0 基 `line` 编译断点仍然兼容。前置条件：应用必须是 **debug 签名**；同一 pid 同时只允许一个调试客户端（DevEco 调试会话开着时 attach 会连不上）。
 
 > 日志与应用管理不另做工具——直接用官方 CLI：`devecocli log`（`--level/--keyword/--bundle-name/--tail/--format json/--follow`）与 `devecocli device app list|info|start|stop|install|uninstall`（`device app info --format json` 里含 `applicationInfo.appProvisionType`，即 debug 签名判定）。
@@ -45,6 +52,10 @@
 
 // harmony_debug：直接用 .ets 第 296 行，不需要手查编译后的 Index.ts
 { "action": "set_breakpoint", "source_path": "entry/src/main/ets/pages/Index.ets", "source_line": 296 }
+
+// harmony_web_dom：先找 ArkWeb 页面，再按 CSS 选择器读取 DOM
+{ "action": "targets", "package_name": "com.example.app" }
+{ "action": "snapshot", "target_id": "<target-id>", "selector": "div#app", "depth": 8, "max_nodes": 400 }
 ```
 
 ### .ets 文件查看器

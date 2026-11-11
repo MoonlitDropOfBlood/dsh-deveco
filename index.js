@@ -91,6 +91,16 @@ import {
 } from "./harmony-device.mjs";
 import { buildHarmonyAgentTools } from "./harmony-agent-tools.mjs";
 import { inspectHarmonyProject } from "./harmony-project.mjs";
+import {
+  parseWebDebugSockets,
+  buildWebForwardArgs,
+  buildWebForwardRemoveArgs,
+  parseDevToolsTargets,
+  selectWebTarget,
+  fetchDevToolsJson,
+  readWebDom,
+  WebDevToolsError,
+} from "./harmony-webdevtools.mjs";
 import { buildDebuggerForwardRemoveArgs, createDebugNoticeMessage, decideDebugNoticeDelivery } from "./harmony-debugger.mjs";
 
 /**
@@ -477,6 +487,8 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     markRemoteMethod(this, "uiTap", "uiTap");
     markRemoteMethod(this, "uiSwipe", "uiSwipe");
     markRemoteMethod(this, "uiText", "uiText");
+    markRemoteMethod(this, "webTargets", "webTargets");
+    markRemoteMethod(this, "webDomRead", "webDomRead");
     markRemoteMethod(this, "listProjects", "listProjects");
     markRemoteMethod(this, "readTextFile", "readTextFile");
 
@@ -511,6 +523,8 @@ export class HarmonyDevEcoService extends TypertRemoteService {
               shell: (command, device, timeoutMs) => this._deviceShell(command, device, timeoutMs),
               notifyAgent: (payload) => this._notifyDebugAgent(payload),
               noteAgentActivity: (agent) => this._noteDebugAgentActivity(agent),
+              webTargets: (request) => this._listWebTargets(request),
+              webDomRead: (request) => this._readWebDom(request),
             };
             for (const tool of buildHarmonyAgentTools({ defineTool, host })) {
               register(tool, tool && tool.name);
@@ -1517,6 +1531,269 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     const r = await this._fetchDevEcoTree(request);
     if (!r.ok) return r;
     return ok({ nodes: r.value.nodes, source: r.value.source });
+  }
+
+  /**
+   * 枚举 ArkWeb DevTools socket 并尽量解析每个 socket 的宿主包名。
+   * 只有应用主动调用 `setWebDebuggingAccess(true)` 后，内核才会在
+   * `/proc/net/unix` 暴露 `webview_devtools_remote_<pid>`。
+   */
+  async _webSocketOwners(request) {
+    const hdc = this._resolveHdcPath();
+    if (!hdc) {
+      return err(
+        "no-hdc",
+        "未找到 hdc。Web DOM 读取依赖 SDK 自带的 hdc；请先在设置 → HarmonyOS Suite 配置 Studio/CLT 路径。"
+      );
+    }
+    const device = request && typeof request.device === "string" && request.device ? request.device : undefined;
+    const out = await this._deviceShell("cat /proc/net/unix", device, 10000);
+    if (!out.ok) return out;
+    const text = `${out.stdout || ""}\n${out.stderr || ""}`;
+    if (/\[Fail\]/i.test(text)) {
+      return err("hdc-failed", text.trim() || "读取设备 socket 表失败");
+    }
+    let sockets = parseWebDebugSockets(out.stdout || "");
+    const wantedPid = Number(request && request.pid);
+    if (Number.isInteger(wantedPid) && wantedPid > 0) {
+      sockets = sockets.filter((item) => item.pid === wantedPid);
+    }
+    const packageName = String(
+      (request && (request.packageName || request.package_name)) || ""
+    ).trim();
+    if (packageName) {
+      const pidsResult = await this.deviceProcessPids({ device, bundle: packageName });
+      if (!pidsResult.ok) return pidsResult;
+      const pids = new Set(
+        (pidsResult.value && Array.isArray(pidsResult.value.pids) ? pidsResult.value.pids : [])
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value > 0)
+      );
+      if (pids.size === 0) {
+        return err(
+          "app-not-running",
+          `包名 ${packageName} 当前没有运行进程。先启动应用并加载 Web 页面，再重试。`
+        );
+      }
+      sockets = sockets.filter((item) => pids.has(item.pid));
+    }
+    if (!sockets.length) {
+      const scoped = Number.isInteger(wantedPid) && wantedPid > 0
+        ? `（已限定 pid=${wantedPid}${packageName ? `，包名=${packageName}` : ""}）`
+        : "";
+      return err(
+        "web-debugging-disabled",
+        `设备上没有找到 webview_devtools_remote_* socket${scoped}。前置条件：`
+          + "① 应用调用 webview.WebviewController.setWebDebuggingAccess(true)（API 20 起可传端口走无线调试）；"
+          + "② module.json5 声明 ohos.permission.INTERNET；"
+          + "③ Web 组件已实际加载页面；④ 设备为 HarmonyOS 4.1.0 及以上。"
+      );
+    }
+    const owners = [];
+    for (const item of sockets.slice(0, 16)) {
+      let resolvedPackage = packageName;
+      if (!resolvedPackage) {
+        const cmdline = await this._deviceShell(`cat /proc/${item.pid}/cmdline`, device, 8000).catch(() => null);
+        resolvedPackage = cmdline && cmdline.ok
+          ? String(cmdline.stdout || "").replace(/\0/g, " ").trim().split(/\s+/)[0] || ""
+          : "";
+      }
+      const owner = { socketName: item.socketName, pid: item.pid };
+      if (resolvedPackage) owner.packageName = resolvedPackage;
+      owners.push(owner);
+    }
+    return ok({ owners, device });
+  }
+
+  /**
+   * 建立一次性 fport → 执行读取 → **只清理本次规则**。
+   * 官方脚本的「先删所有 fport」绝不能照抄，否则会踢掉 ArkTS 调试器/ArkUI
+   * Inspector 的转发规则。
+   */
+  async _withWebForward(device, socketName, fn) {
+    const hdc = this._resolveHdcPath();
+    if (!hdc) return err("no-hdc", "未找到 hdc");
+    const targs = device ? ["-t", device] : [];
+    let lastFailure = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const localPort = await pickFreePort();
+      const forward = await this._hdcRun(
+        [...targs, ...buildWebForwardArgs(localPort, socketName)],
+        15000
+      );
+      const forwardText = `${forward.stdout || ""}\n${forward.stderr || ""}`.trim();
+      const accepted = forward.ok
+        && !/\[Fail\]/i.test(forwardText)
+        && /forwardport result:\s*ok|^\s*ok\s*$/im.test(forwardText);
+      if (!accepted) {
+        lastFailure = forwardText
+          || (forward.error && forward.error.message)
+          || "fport 没有返回 Forwardport result:OK";
+        if (/TCP Port listen failed/i.test(lastFailure)) continue;
+        return err("forward-failed", `hdc fport 建立 ${socketName} 的转发失败：${lastFailure}`);
+      }
+      try {
+        return ok(await fn(localPort));
+      } catch (error) {
+        return this._webErrorResult(error, "webdevtools-failed");
+      } finally {
+        await this._hdcRun(
+          [...targs, ...buildWebForwardRemoveArgs(localPort, socketName)],
+          10000
+        ).catch(() => {});
+      }
+    }
+    return err(
+      "forward-failed",
+      `连续 3 次端口被占用，无法为 ${socketName} 建立 hdc fport：${lastFailure}`
+    );
+  }
+
+  _webErrorResult(error, fallbackCode) {
+    if (error instanceof WebDevToolsError) return err(error.code, error.message);
+    const message = error && error.message ? error.message : String(error || "unknown error");
+    return err(fallbackCode || "webdevtools-failed", message);
+  }
+
+  /** 把一次 `/json` 目标列表附着到 owner 上，生成稳定的 wire target。 */
+  _webTargetsWire(owner, targets) {
+    return targets.map((target) => {
+      const wire = {
+        id: target.id,
+        type: target.type,
+        title: target.title,
+        url: target.url,
+        pid: owner.pid,
+        socketName: owner.socketName,
+      };
+      if (target.description) wire.description = target.description;
+      if (owner.packageName) wire.packageName = owner.packageName;
+      return wire;
+    });
+  }
+
+  /** Remote / agent 共用：列出可调试 Web 页面，不动 DOM。 */
+  async _listWebTargets(request) {
+    const ownersResult = await this._webSocketOwners(request);
+    if (!ownersResult.ok) return ownersResult;
+    const { owners, device } = ownersResult.value;
+    const targets = [];
+    const warnings = [];
+    for (const owner of owners) {
+      const listed = await this._withWebForward(device, owner.socketName, async (localPort) => {
+        const payload = await fetchDevToolsJson(localPort, "/json", { timeoutMs: 6000 });
+        return parseDevToolsTargets(payload);
+      });
+      if (!listed.ok) {
+        const detail = listed.error
+          ? (listed.error.message || listed.error.code || "unknown error")
+          : "unknown web target failure";
+        warnings.push(`${owner.socketName}: ${detail}`);
+        continue;
+      }
+      targets.push(...this._webTargetsWire(owner, listed.value));
+    }
+    if (!targets.length) {
+      return err(
+        "no-web-target",
+        `找到了 ${owners.length} 个 ArkWeb DevTools socket，但 /json 没有返回可调试 target。`
+          + (warnings.length ? ` 详情：${warnings.join("；")}` : "")
+      );
+    }
+    const value = { targets, socketCount: owners.length };
+    if (warnings.length) value.warnings = warnings;
+    return ok(value);
+  }
+
+  /**
+   * 一次完整 DOM 读取：发现 socket → fport → /json → 选择 target →
+   * CDP DOM → 关闭 WS → finally 清理 fport。nodeId 不跨调用保存。
+   */
+  async _readWebDom(request) {
+    const req = request && typeof request === "object" ? request : {};
+    const ownersResult = await this._webSocketOwners(req);
+    if (!ownersResult.ok) return ownersResult;
+    const { owners, device } = ownersResult.value;
+    const targetId = String(req.targetId || req.target_id || "").trim();
+    if (!targetId && owners.length > 1 && !(Number(req.pid) > 0)) {
+      return err(
+        "ambiguous-process",
+        `发现多个 ArkWeb 进程（${owners.map((owner) => `pid=${owner.pid}`).join(", ")}）。`
+          + "请用 pid + package_name 缩小范围，或先调用 webTargets 取得 targetId。"
+      );
+    }
+    const failures = [];
+    for (const owner of owners) {
+      const result = await this._withWebForward(device, owner.socketName, async (localPort) => {
+        const payload = await fetchDevToolsJson(localPort, "/json", { timeoutMs: 6000 });
+        const targets = this._webTargetsWire(owner, parseDevToolsTargets(payload));
+        const selected = selectWebTarget(targets, targetId);
+        if (!selected) {
+          if (targetId) {
+            const notFound = new WebDevToolsError(
+              "target-not-found",
+              `ArkWeb socket ${owner.socketName} 中没有 target ${targetId}`
+            );
+            notFound.retryableAcrossOwners = true;
+            throw notFound;
+          }
+          const pageLike = targets.filter((target) => target.type === "page" || target.type === "webview");
+          if (pageLike.length > 1) {
+            throw new WebDevToolsError(
+              "ambiguous-target",
+              `当前应用有 ${pageLike.length} 个可调试 Web 页面：${pageLike.map((target) => target.id).join(", ")}。请指定 target_id。`
+            );
+          }
+          throw new WebDevToolsError("no-web-target", "没有可用的 page/webview target");
+        }
+        const dom = await readWebDom({
+          port: localPort,
+          targetId: selected.id,
+          selector: typeof req.selector === "string" ? req.selector : undefined,
+          depth: req.depth,
+          maxNodes: req.maxNodes || req.max_nodes,
+          includeAttrs: req.includeAttrs === true || req.include_attrs === true,
+          includeHtml: req.includeHtml === true || req.include_html === true,
+          pierce: req.pierce !== false,
+          timeoutMs: 15000,
+        });
+        const wire = {
+          source: "webdevtools",
+          target: selected,
+          nodeCount: dom.nodeCount,
+          truncated: dom.truncated,
+          hiddenNodes: dom.hiddenNodes,
+          nodes: dom.nodes,
+        };
+        if (typeof dom.html === "string") wire.html = dom.html;
+        if (dom.htmlTruncated === true) wire.htmlTruncated = true;
+        return wire;
+      });
+      if (result.ok) return result;
+      if (result.error && result.error.code === "target-not-found" && targetId) {
+        failures.push(result.error.message);
+        continue;
+      }
+      return result;
+    }
+    if (targetId) {
+      return err(
+        "target-not-found",
+        `没有找到 DevTools target ${targetId}。页面可能已关闭或导航导致 target 变化；重新调用 webTargets。`
+          + (failures.length ? ` 已检查：${failures.join("；")}` : "")
+      );
+    }
+    return err("no-web-target", "没有找到可调试的 Web 页面");
+  }
+
+  /** Remote 面：ArkWeb 目标列表。 */
+  async webTargets(request) {
+    return this._listWebTargets(request);
+  }
+
+  /** Remote 面：读取某 target 的 DOM 子树 / outerHTML。 */
+  async webDomRead(request) {
+    return this._readWebDom(request);
   }
 
   /**

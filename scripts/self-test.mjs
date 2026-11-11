@@ -36,6 +36,11 @@ import {
   decideDebugNoticeDelivery
 } from '../harmony-debugger.mjs'
 import { installPauseNotifier, buildHarmonyAgentTools } from '../harmony-agent-tools.mjs'
+import {
+  parseWebDebugSockets, buildWebForwardArgs, buildWebForwardRemoveArgs, buildWebSocketUrl,
+  parseDevToolsTargets, selectWebTarget, normalizeWebDom, webDomTreeLines,
+  WebDevToolsSession, WebDevToolsError,
+} from '../harmony-webdevtools.mjs'
 import { findHarmonyProjectRoot, inspectHarmonyProject } from '../harmony-project.mjs'
 import {
   decodeVlqSegment, decodeSourceMapMappings, originalPositionFor, generatedPositionFor,
@@ -2304,7 +2309,7 @@ test('harmony_project agent tool defaults to the host workspace and returns the 
   const fixture = createHarmonyProjectFixture()
   try {
     const tools = buildHarmonyAgentTools({ defineTool: (spec) => spec, host: { cwd: fixture.root, sessions: new Map() } })
-    assert.deepEqual(tools.map((tool) => tool.name), ['harmony_project', 'harmony_debug'])
+    assert.deepEqual(tools.map((tool) => tool.name), ['harmony_project', 'harmony_debug', 'harmony_web_dom'])
     const result = await tools[0].execute({})
     assert.equal(result.ok, true)
     assert.equal(result.project.root, fixture.root)
@@ -2425,4 +2430,351 @@ test('breakpoint notifications prefer the mapped .ets source location', async ()
   } finally {
     rmSync(fixture.root, { recursive: true, force: true })
   }
+})
+
+// ---- ArkWeb Web DevTools ---------------------------------------------------
+
+function fixtureWebDom () {
+  const text = {
+    nodeId: 31,
+    backendNodeId: 31,
+    nodeType: 3,
+    nodeName: '#text',
+    nodeValue: 'Hello web',
+  }
+  const span = {
+    nodeId: 21,
+    backendNodeId: 21,
+    nodeType: 1,
+    nodeName: 'SPAN',
+    localName: 'span',
+    attributes: ['class', 'hint'],
+    childNodeCount: 1,
+    children: [{ ...text, nodeId: 32, backendNodeId: 32, nodeValue: 'hint text' }],
+  }
+  const p = {
+    nodeId: 22,
+    backendNodeId: 22,
+    nodeType: 1,
+    nodeName: 'P',
+    localName: 'p',
+    childNodeCount: 1,
+    children: [text],
+  }
+  const div = {
+    nodeId: 2,
+    backendNodeId: 2,
+    nodeType: 1,
+    nodeName: 'DIV',
+    localName: 'div',
+    attributes: ['id', 'app', 'class', 'classA', 'data-x', '1'],
+    childNodeCount: 2,
+    children: [p, span],
+  }
+  const html = {
+    nodeId: 3,
+    backendNodeId: 3,
+    nodeType: 1,
+    nodeName: 'HTML',
+    localName: 'html',
+    childNodeCount: 1,
+    children: [div],
+  }
+  return {
+    nodeId: 1,
+    backendNodeId: 1,
+    nodeType: 9,
+    nodeName: '#document',
+    childNodeCount: 1,
+    children: [html],
+  }
+}
+
+test('parseWebDebugSockets extracts every ArkWeb socket and ignores unrelated entries', () => {
+  const text = [
+    '0000: 00000002 00000000 00010000 0001 01 1001 @webview_devtools_remote_38532',
+    '0000: 00000002 00000000 00010000 0001 01 1002 @webview_devtools_remote_48532',
+    '0000: 00000002 00000000 00010000 0001 01 1003 @webview_devtools_remote_38532',
+    '0000: 00000002 00000000 00010000 0001 01 1004 @some_other_socket',
+    'garbage webview_devtools_remote_not_a_pid',
+  ].join('\n')
+  assert.deepEqual(parseWebDebugSockets(text), [
+    { socketName: 'webview_devtools_remote_38532', pid: 38532 },
+    { socketName: 'webview_devtools_remote_48532', pid: 48532 },
+  ])
+  assert.deepEqual(parseWebDebugSockets('no devtools here'), [])
+})
+
+test('Web DevTools argv and websocket URL are built from our local port, not the device payload', () => {
+  assert.deepEqual(
+    buildWebForwardArgs(19011, 'webview_devtools_remote_38532'),
+    ['fport', 'tcp:19011', 'localabstract:webview_devtools_remote_38532'],
+  )
+  assert.deepEqual(
+    buildWebForwardRemoveArgs(19011, 'webview_devtools_remote_38532'),
+    ['fport', 'rm', 'tcp:19011', 'localabstract:webview_devtools_remote_38532'],
+  )
+  assert.equal(buildWebSocketUrl(19011, 'TARGET A'), 'ws://127.0.0.1:19011/devtools/page/TARGET%20A')
+  assert.throws(() => buildWebForwardArgs(0, 'webview_devtools_remote_1'), /无效的本地端口/)
+})
+
+test('parseDevToolsTargets accepts /json arrays and {targets}, drops duplicates and unsafe shapes', () => {
+  const payload = {
+    targets: [
+      { id: 'A', type: 'page', title: 'Demo', url: 'https://example.test/', description: 'main' },
+      { id: 'A', type: 'page', title: 'duplicate' },
+      { id: '', type: 'page', title: 'missing id' },
+      { id: 'B', type: 'worker', title: 'worker', url: 'worker.js' },
+      null,
+    ],
+  }
+  assert.deepEqual(parseDevToolsTargets(payload), [
+    { id: 'A', type: 'page', title: 'Demo', url: 'https://example.test/', description: 'main' },
+    { id: 'B', type: 'worker', title: 'worker', url: 'worker.js', description: '' },
+  ])
+  assert.deepEqual(parseDevToolsTargets([{ id: 'C', type: 'page', title: 'C', url: '' }]), [
+    { id: 'C', type: 'page', title: 'C', url: '', description: '' },
+  ])
+  assert.throws(() => parseDevToolsTargets('{not json'), /不是有效 JSON/)
+  assert.throws(() => parseDevToolsTargets({ foo: 'bar' }), /不是 target 数组/)
+})
+
+test('selectWebTarget prefers an explicit id and refuses to guess among multiple pages', () => {
+  const targets = [
+    { id: 'A', type: 'page' },
+    { id: 'B', type: 'page' },
+  ]
+  assert.equal(selectWebTarget(targets, 'B').id, 'B')
+  assert.equal(selectWebTarget(targets, 'Z'), null)
+  assert.equal(selectWebTarget(targets), null)
+  assert.equal(selectWebTarget([{ id: 'solo', type: 'page' }]).id, 'solo')
+  assert.equal(selectWebTarget([{ id: 'iframe', type: 'iframe' }]).id, 'iframe')
+})
+
+test('normalizeWebDom preserves attributes, text, child counts and whole-subtree truncation', () => {
+  const full = normalizeWebDom(fixtureWebDom(), { maxDepth: 8, maxNodes: 100, includeAttrs: true })
+  assert.equal(full.nodes.length, 7)
+  assert.equal(full.truncated, false)
+  const div = full.nodes.find((node) => node.tag === 'div')
+  assert.equal(div.id, 'app')
+  assert.deepEqual(div.classes, ['classA'])
+  assert.equal(div.attributes['data-x'], '1')
+  assert.equal(div.attrCount, 3)
+  const p = full.nodes.find((node) => node.tag === 'p')
+  assert.equal(p.text, 'Hello web')
+  const text = full.nodes.find((node) => node.tag === '#text')
+  assert.equal(text.text, 'Hello web')
+
+  const depthLimited = normalizeWebDom(fixtureWebDom(), { maxDepth: 2, maxNodes: 100 })
+  assert.equal(depthLimited.nodes.length, 3)
+  assert.equal(depthLimited.truncated, true)
+  assert.equal(depthLimited.nodes[2].childrenOmitted, true)
+  assert.equal(depthLimited.nodes[2].hiddenDirect, 2)
+  assert.equal(depthLimited.nodes[2].childCount, 2)
+
+  const nodeLimited = normalizeWebDom(fixtureWebDom(), { maxDepth: 8, maxNodes: 2 })
+  assert.equal(nodeLimited.nodes.length, 2)
+  assert.equal(nodeLimited.nodes[1].childrenOmitted, true)
+  assert.equal(nodeLimited.nodes[1].hiddenDirect, 1)
+})
+
+test('normalizeWebDom counts descendants even when CDP reports nodeId=0 for unpushed nodes', () => {
+  const root = {
+    nodeId: 5,
+    nodeType: 1,
+    nodeName: 'BODY',
+    localName: 'body',
+    childNodeCount: 2,
+    children: [
+      { nodeId: 0, nodeType: 1, nodeName: 'DIV', localName: 'div', childNodeCount: 0, children: [] },
+      { nodeId: 0, nodeType: 1, nodeName: 'SPAN', localName: 'span', childNodeCount: 0, children: [] },
+    ],
+  }
+  const value = normalizeWebDom(root, { maxDepth: 2, maxNodes: 100 })
+  assert.equal(value.nodeCount, 3)
+  assert.equal(value.nodes.length, 3)
+})
+
+test('normalizeWebDom marks CDP depth gaps instead of pretending a truncated node is a leaf', () => {
+  const root = {
+    nodeId: 1,
+    nodeType: 9,
+    nodeName: '#document',
+    childNodeCount: 5,
+    children: [{ nodeId: 2, nodeType: 1, nodeName: 'HTML', localName: 'html', childNodeCount: 0 }],
+  }
+  const value = normalizeWebDom(root, { maxDepth: 1, maxNodes: 100 })
+  assert.equal(value.nodes[0].childCount, 5)
+  assert.equal(value.nodes[0].childrenOmitted, true)
+  assert.equal(value.nodes[0].hiddenDirect, 4)
+  assert.equal(value.truncated, true)
+})
+
+test('webDomTreeLines renders tag/id/class plus explicit omitted children', () => {
+  const value = normalizeWebDom(fixtureWebDom(), { maxDepth: 2, maxNodes: 100 })
+  const lines = webDomTreeLines(value.nodes)
+  assert.match(lines[0], /^#document/)
+  assert.match(lines[2], /div#app\.classA/)
+  assert.match(lines[2], /\+2\/2 children hidden/)
+})
+
+class FakeCdpWebSocket {
+  constructor (url) {
+    this.url = url
+    this.sent = []
+    setTimeout(() => this.onopen && this.onopen({}), 0)
+  }
+
+  send (raw) {
+    const request = JSON.parse(raw)
+    this.sent.push(request)
+    setTimeout(() => {
+      if (request.method === 'bad') {
+        this.onmessage && this.onmessage({
+          data: JSON.stringify({ id: request.id, error: { code: -32601, message: 'method not found' } }),
+        })
+        return
+      }
+      this.onmessage && this.onmessage({
+        data: JSON.stringify({ id: request.id, result: { echo: request.method, params: request.params } }),
+      })
+    }, 0)
+  }
+
+  close () {
+    setTimeout(() => this.onclose && this.onclose({ code: 1000 }), 0)
+  }
+}
+
+test('WebDevToolsSession uses standard Chromium JSON-RPC and reports cdp-error separately', async () => {
+  const session = new WebDevToolsSession({
+    port: 19011,
+    targetId: 'TARGET-A',
+    WebSocketImpl: FakeCdpWebSocket,
+    timeoutMs: 3000,
+  })
+  await session.connect()
+  assert.equal(session.url, 'ws://127.0.0.1:19011/devtools/page/TARGET-A')
+  const reply = await session.request('DOM.getDocument', { depth: 1 })
+  assert.equal(reply.echo, 'DOM.getDocument')
+  assert.deepEqual(reply.params, { depth: 1 })
+  await assert.rejects(
+    session.request('bad'),
+    (error) => error instanceof WebDevToolsError && error.code === 'cdp-error' && /method not found/.test(error.message),
+  )
+  await session.close()
+})
+
+test('TYPERT manifest exposes webTargets/webDomRead with strict dual-shape codecs', async () => {
+  const { TYPERT } = await import('../typert.host.js')
+  assert.equal(TYPERT.invocations.length, 24)
+  for (const method of ['webTargets', 'webDomRead']) {
+    const invocation = TYPERT.invocations.find((entry) => entry.method === method)
+    assert.ok(invocation, `${method} invocation exists`)
+    assert.equal(invocation.id, `dsh-deveco#harmonyDevEco/${method}`)
+    assert.equal(invocation.parameters.length, 1)
+    assert.equal(invocation.parameters[0].codec.mode, 'strict')
+    assert.equal(typeof invocation.parameters[0].codec.schema.safeParse, 'function')
+    assert.equal(typeof invocation.parameters[0].codec.create().safeParse, 'function')
+    assert.equal(invocation.result.mode, 'strict')
+    assert.equal(typeof invocation.result.schema.safeParse, 'function')
+  }
+  const targets = TYPERT.invocations.find((entry) => entry.method === 'webTargets')
+  assert.equal(targets.parameters[0].codec.schema.safeParse({ pid: 4321 }).success, true)
+  assert.equal(targets.parameters[0].codec.schema.safeParse({ pid: 'bad' }).success, false)
+  const read = TYPERT.invocations.find((entry) => entry.method === 'webDomRead')
+  assert.equal(read.parameters[0].codec.schema.safeParse({
+    targetId: 'T', selector: '#app', depth: 4, maxNodes: 100, includeHtml: true,
+  }).success, true)
+  assert.equal(read.result.schema.safeParse({
+    ok: true,
+    value: {
+      source: 'webdevtools',
+      target: { id: 'T', type: 'page', title: 'T', url: 'https://t/', pid: 1, socketName: 'webview_devtools_remote_1' },
+      nodeCount: 1,
+      truncated: false,
+      hiddenNodes: 0,
+      nodes: [{
+        index: 0, depth: 0, parentIndex: -1, nodeType: 9, tag: '#document', name: '#document',
+        text: '', childCount: 0, attrCount: 0,
+      }],
+    },
+  }).success, true)
+})
+
+test('Web fport helper removes only its own rule on success and never bulk-deletes forwards', async () => {
+  const { HarmonyDevEcoService } = await import('../index.js')
+  const calls = []
+  const service = Object.create(HarmonyDevEcoService.prototype)
+  service._resolveHdcPath = () => 'hdc'
+  service._hdcRun = async (argv) => {
+    calls.push(argv)
+    if (argv.includes('rm')) return { ok: true, stdout: '', stderr: '' }
+    return { ok: true, stdout: 'Forwardport result:OK', stderr: '' }
+  }
+  const result = await service._withWebForward('127.0.0.1:5555', 'webview_devtools_remote_4321', async (port) => {
+    assert.ok(Number.isInteger(port) && port > 0)
+    return { port }
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.value.port > 0, true)
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[0].slice(0, 3), ['-t', '127.0.0.1:5555', 'fport'])
+  assert.match(calls[0][3], /^tcp:\d+$/)
+  assert.equal(calls[0][4], 'localabstract:webview_devtools_remote_4321')
+  assert.deepEqual(calls[1].slice(0, 4), ['-t', '127.0.0.1:5555', 'fport', 'rm'])
+  assert.equal(calls[1][4], calls[0][3])
+  assert.equal(calls[1][5], calls[0][4])
+})
+
+test('Web fport helper retries only TCP port failures and reports after three attempts', async () => {
+  const { HarmonyDevEcoService } = await import('../index.js')
+  const calls = []
+  const service = Object.create(HarmonyDevEcoService.prototype)
+  service._resolveHdcPath = () => 'hdc'
+  service._hdcRun = async (argv) => {
+    calls.push(argv)
+    return { ok: true, stdout: '[Fail]TCP Port listen failed', stderr: '' }
+  }
+  const result = await service._withWebForward('127.0.0.1:5555', 'webview_devtools_remote_4321', async () => ({ ok: true }))
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'forward-failed')
+  assert.equal(calls.length, 3)
+  assert.equal(calls.every((argv) => argv.includes('fport') && !argv.includes('rm')), true)
+})
+
+test('harmony_web_dom agent tool maps targets and snapshot into bounded renderable output', async () => {
+  const target = {
+    id: 'TARGET-A', type: 'page', title: 'Demo Page', url: 'https://example.test/',
+    pid: 4321, socketName: 'webview_devtools_remote_4321', packageName: 'com.example.demo',
+  }
+  const webValue = normalizeWebDom(fixtureWebDom(), { maxDepth: 3, maxNodes: 10, includeAttrs: true })
+  const host = {
+    cwd: '',
+    sessions: new Map(),
+    webTargets: async () => ({ ok: true, value: { targets: [target], socketCount: 1 } }),
+    webDomRead: async () => ({
+      ok: true,
+      value: {
+        source: 'webdevtools',
+        target,
+        nodeCount: webValue.nodeCount,
+        truncated: webValue.truncated,
+        hiddenNodes: webValue.hiddenNodes,
+        nodes: webValue.nodes,
+        html: '<div id="app">Hello</div>',
+      },
+    }),
+  }
+  const tools = buildHarmonyAgentTools({ defineTool: (spec) => spec, host })
+  const tool = tools.find((item) => item.name === 'harmony_web_dom')
+  assert.ok(tool)
+  const targets = await tool.execute({ action: 'targets' })
+  assert.equal(targets.targets[0].id, 'TARGET-A')
+  assert.match(tool.output.render({ action: 'targets' }, targets)[0].text, /Demo Page/)
+  const snapshot = await tool.execute({ action: 'snapshot', target_id: 'TARGET-A', format: 'tree' })
+  assert.equal(snapshot.nodeCount, 7)
+  assert.equal(snapshot.nodes[0].tag, '#document')
+  assert.match(tool.output.render({ action: 'snapshot', format: 'tree' }, snapshot)[0].text, /div#app\.classA/)
+  assert.match(tool.output.render({ action: 'snapshot', format: 'html' }, snapshot)[0].text, /<div id="app">/)
 })

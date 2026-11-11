@@ -4,6 +4,35 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-12
+
+### Added
+
+- 新增 ArkWeb Web DOM 读取能力：`harmony_web_dom` agent 工具（`targets` / `snapshot`）与 `webTargets` / `webDomRead` Remote。
+- 通过 `webview_devtools_remote_<pid>` → 一次性 `hdc fport` → 标准 Chromium CDP WebSocket 读取 DOM；支持 CSS 选择器子树、属性、outerHTML、深度/节点数有界裁剪。
+- 截断保持整棵子树省略语义，边界节点带 `childrenOmitted` / `hiddenDirect` / `childCount`；每次操作只清理自己创建的 fport 规则。
+- 新增 `harmony-webdevtools.mjs`、假 CDP 服务 `scripts/cdp-fixture.mjs` 与端到端探针 `scripts/e2e-web-dom.mjs`。
+
+### Validation
+
+- 153 项单元测试通过；`npm run e2e:webdom` 通过（假 Chromium HTTP `/json` + RFC6455 WS，验证标准 CDP、选择器子树、outerHTML、错误映射与无 Origin 握手）。
+- **真机验证通过**：HUAWEI Mate 70 / ArkWeb 7.0.0.111 / Chrome 144，包名 `com.jfzt.uranus`；`webTargets` 发现 page target，`webDomRead` 读取 133 节点 / 122 KB outerHTML，`body` 选择器子树 74 节点，缺失选择器正确返回 `selector-not-found`，结束后 `hdc fport ls` 为空。记录见 `docs/arkweb-web-dom-recon.md`。
+- 多 Web 组件、OOPIF/iframe、页面导航与 Chrome DevTools 并发尚未覆盖。
+
+### Fixed
+
+- 真机 `DOM.describeNode` 后代 `nodeId=0` 时节点计数错误；改为按对象身份去重。
+- 一次性 fport 回调返回值未重新包装为 Host `{ok:true,value}` 包络，导致列表/读取误判失败。
+- Document 根取 outerHTML 时改取 `documentElement`；DOCTYPE 显示为 `<!doctype html>`。
+
+### 📦 安装
+
+```bash
+dsh plugin --profile web add @duke-dsh-plugins/dsh-deveco
+```
+
+也可使用本 Release 附件中的 tgz 包。安装或更新后必须重启 DSH 生效。
+
 ## [0.7.1] - 2026-11-09
 
 ### Fixed

@@ -264,6 +264,65 @@ const uiDevEcoTreeSchema = z
   })
   .readonly();
 
+// ---- ArkWeb Web DOM schemas ------------------------------------------------
+
+const webTargetSchema = z
+  .object({
+    id: z.string().readonly(),
+    type: z.string().readonly(),
+    title: z.string().readonly(),
+    url: z.string().readonly(),
+    pid: z.number().readonly(),
+    socketName: z.string().readonly(),
+    packageName: z.string().readonly().optional(),
+    description: z.string().readonly().optional(),
+  })
+  .readonly();
+
+const webTargetsValueSchema = z
+  .object({
+    targets: z.array(webTargetSchema).readonly(),
+    socketCount: z.number().readonly(),
+    warnings: z.array(z.string()).readonly().optional(),
+  })
+  .readonly();
+
+const webDomNodeSchema = z
+  .object({
+    index: z.number().readonly(),
+    depth: z.number().readonly(),
+    parentIndex: z.number().readonly(),
+    nodeType: z.number().readonly(),
+    tag: z.string().readonly(),
+    name: z.string().readonly(),
+    nodeName: z.string().readonly().optional(),
+    localName: z.string().readonly().optional(),
+    text: z.string().readonly(),
+    childCount: z.number().readonly(),
+    childrenOmitted: z.boolean().readonly().optional(),
+    hiddenDirect: z.number().readonly().optional(),
+    attrCount: z.number().readonly(),
+    id: z.string().readonly().optional(),
+    classes: z.array(z.string()).readonly().optional(),
+    frameId: z.string().readonly().optional(),
+    shadowRootType: z.string().readonly().optional(),
+    attributes: z.record(z.string(), z.string()).readonly().optional(),
+  })
+  .readonly();
+
+const webDomReadValueSchema = z
+  .object({
+    source: z.literal("webdevtools").readonly(),
+    target: webTargetSchema,
+    nodeCount: z.number().readonly(),
+    truncated: z.boolean().readonly(),
+    hiddenNodes: z.number().readonly(),
+    nodes: z.array(webDomNodeSchema).readonly(),
+    html: z.string().readonly().optional(),
+    htmlTruncated: z.boolean().readonly().optional(),
+  })
+  .readonly();
+
 const uiWindowSchema = z
   .object({
     id: z.number().readonly(),
@@ -423,6 +482,29 @@ const _harmonyDevEco_uiDevEcoTree_parameter_0$schema = z
     device: z.string().optional().readonly(),
     pid: z.number().optional().readonly(),
     packageName: z.string().optional().readonly(),
+  })
+  .readonly();
+
+const _harmonyDevEco_webTargets_parameter_0$schema = z
+  .object({
+    device: z.string().optional().readonly(),
+    pid: z.number().optional().readonly(),
+    packageName: z.string().optional().readonly(),
+  })
+  .readonly();
+
+const _harmonyDevEco_webDomRead_parameter_0$schema = z
+  .object({
+    device: z.string().optional().readonly(),
+    pid: z.number().optional().readonly(),
+    packageName: z.string().optional().readonly(),
+    targetId: z.string().optional().readonly(),
+    selector: z.string().optional().readonly(),
+    depth: z.number().optional().readonly(),
+    maxNodes: z.number().optional().readonly(),
+    includeAttrs: z.boolean().optional().readonly(),
+    includeHtml: z.boolean().optional().readonly(),
+    pierce: z.boolean().optional().readonly(),
   })
   .readonly();
 
@@ -635,6 +717,14 @@ export const TYPERT = {
       "Fetch the component tree through DevEco Studio's own development-debug channel (`hdc fport ark:<pid>@<pkg>` + WebSocket `type:root`). The only source that reports declared padding/margin/border and component/Builder names (`viewTag`). Requires the app to expose its ArkUI inspector socket: debug build, `aa attach` (run automatically), and no DevEco Inspector panel holding the single client slot.",
       "/**\n * DevEco development-debug tree source.\n * @param request - optional `{ device }`, `pid` (default: focused window's pid), `packageName`.\n * @returns `{ nodes, source: \"deveco\" }` — same node shape as uiDump, plus declared box-model values.\n */"),
 
+    iv("webTargets", _harmonyDevEco_webTargets_parameter_0$schema, webTargetsValueSchema,
+      "List ArkWeb DevTools targets discovered through webview_devtools_remote_<pid> sockets and the forwarded /json endpoint.",
+      "/**\n * List ArkWeb DevTools targets.\n * @param request - optional `{ device, pid, packageName }` filters.\n * @returns `{ targets, socketCount, warnings? }`; targets omit stale device-side websocket URLs.\n */"),
+
+    iv("webDomRead", _harmonyDevEco_webDomRead_parameter_0$schema, webDomReadValueSchema,
+      "Read a bounded DOM tree or outerHTML from one ArkWeb page target through Chromium CDP, with one-shot fport cleanup.",
+      "/**\n * Read ArkWeb page DOM through Chromium CDP.\n * @param request - `{ device?, pid?, packageName?, targetId?, selector?, depth?, maxNodes?, includeAttrs?, includeHtml?, pierce? }`.\n * @returns `{ source: \"webdevtools\", target, nodeCount, truncated, hiddenNodes, nodes, html?, htmlTruncated? }`.\n */"),
+
     iv("uiWindowList", _harmonyDevEco_uiWindowList_parameter_0$schema, uiWindowListSchema,
       "List the device's UI windows (id, name, pid, displayId, focused) for the Inspector's window selector.",
       "/**\n * List the device's UI windows.\n * @param request - optional `{ device }` filter and `all` to include system windows.\n * @returns `{ windows }` — each `{ id, name, pid, displayId, focused }`.\n */"),
@@ -801,6 +891,22 @@ export const TYPERT = {
           },
           {
             kind: "method",
+            name: "webTargets",
+            signature: "@Remote('webTargets') async webTargets(request?: HarmonyDevEcoWebTargetsRequest): Promise<HarmonyDevEcoWebTargetsResult>",
+            summary: "List ArkWeb DevTools targets (webview_devtools_remote_<pid> + /json).",
+            jsDoc:
+              "/**\n * List ArkWeb DevTools targets.\n * @param request - optional `{ device, pid, packageName }` filters.\n * @returns `{ targets, socketCount, warnings? }`.\n */",
+          },
+          {
+            kind: "method",
+            name: "webDomRead",
+            signature: "@Remote('webDomRead') async webDomRead(request?: HarmonyDevEcoWebDomReadRequest): Promise<HarmonyDevEcoWebDomReadResult>",
+            summary: "Read a bounded Web DOM tree or outerHTML through Chromium CDP.",
+            jsDoc:
+              "/**\n * Read ArkWeb page DOM through Chromium CDP.\n * @param request - target id plus optional selector/depth/maxNodes/includeAttrs/includeHtml/pierce.\n * @returns `{ source: \"webdevtools\", target, nodeCount, truncated, hiddenNodes, nodes, html? }`.\n */",
+          },
+          {
+            kind: "method",
             name: "uiWindowList",
             signature: "@Remote('uiWindowList') async uiWindowList(request?: HarmonyDevEcoUiWindowListRequest): Promise<HarmonyDevEcoUiWindowListResult>",
             summary: "List the device's UI windows (id, name, pid, displayId, focused) for the Inspector's window selector.",
@@ -956,6 +1062,36 @@ export const TYPERT = {
             name: "HarmonyDevEcoUiDumpResult",
             declaration:
               "export type HarmonyDevEcoUiDumpResult = { ok: true; value: { nodes: readonly HarmonyDevEcoUiNode[] } } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "HarmonyDevEcoWebTargetsRequest",
+            declaration:
+              "export interface HarmonyDevEcoWebTargetsRequest {\n    readonly device?: string;\n    readonly pid?: number;\n    readonly packageName?: string;\n}",
+          },
+          {
+            name: "HarmonyDevEcoWebTarget",
+            declaration:
+              "export interface HarmonyDevEcoWebTarget {\n    readonly id: string;\n    readonly type: string;\n    readonly title: string;\n    readonly url: string;\n    readonly pid: number;\n    readonly socketName: string;\n    readonly packageName?: string;\n    readonly description?: string;\n}",
+          },
+          {
+            name: "HarmonyDevEcoWebTargetsResult",
+            declaration:
+              "export type HarmonyDevEcoWebTargetsResult = { ok: true; value: { targets: readonly HarmonyDevEcoWebTarget[]; socketCount: number; warnings?: readonly string[] } } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "HarmonyDevEcoWebDomReadRequest",
+            declaration:
+              "export interface HarmonyDevEcoWebDomReadRequest {\n    readonly device?: string;\n    readonly pid?: number;\n    readonly packageName?: string;\n    readonly targetId?: string;\n    readonly selector?: string;\n    readonly depth?: number;\n    readonly maxNodes?: number;\n    readonly includeAttrs?: boolean;\n    readonly includeHtml?: boolean;\n    readonly pierce?: boolean;\n}",
+          },
+          {
+            name: "HarmonyDevEcoWebDomNode",
+            declaration:
+              "export interface HarmonyDevEcoWebDomNode {\n    readonly index: number;\n    readonly depth: number;\n    readonly parentIndex: number;\n    readonly nodeType: number;\n    readonly tag: string;\n    readonly name: string;\n    readonly nodeName?: string;\n    readonly localName?: string;\n    readonly text: string;\n    readonly childCount: number;\n    readonly childrenOmitted?: boolean;\n    readonly hiddenDirect?: number;\n    readonly attrCount: number;\n    readonly id?: string;\n    readonly classes?: readonly string[];\n    readonly frameId?: string;\n    readonly shadowRootType?: string;\n    readonly attributes?: Readonly<Record<string, string>>;\n}",
+          },
+          {
+            name: "HarmonyDevEcoWebDomReadResult",
+            declaration:
+              "export type HarmonyDevEcoWebDomReadResult = { ok: true; value: { source: 'webdevtools'; target: HarmonyDevEcoWebTarget; nodeCount: number; truncated: boolean; hiddenNodes: number; nodes: readonly HarmonyDevEcoWebDomNode[]; html?: string; htmlTruncated?: boolean } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
             name: "HarmonyDevEcoUiWindowListRequest",
