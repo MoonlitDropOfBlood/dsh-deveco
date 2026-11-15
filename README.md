@@ -144,7 +144,9 @@ node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <你的 debug 
 |---|---|---|
 | Windows | `C:\Program Files\Huawei\DevEco Studio`<br>`C:\Program Files (x86)\Huawei\DevEco Studio`<br>`C:\DevEco Studio` | `C:\Program Files\Huawei\Command Line Tools`<br>`%LOCALAPPDATA%\Huawei\Command Line Tools` |
 | macOS | `/Applications/DevEco Studio.app/Contents`<br>`/Applications/Huawei DevEco Studio.app/Contents`<br>`~/Applications/DevEco Studio.app/Contents` | `/Applications/Command Line Tools.app/Contents`<br>`~/Library/Huawei/Command Line Tools` |
-| Linux | `/opt/deveco-studio`<br>`/opt/Huawei DevEco Studio`<br>`~/deveco-studio` | `/opt/Huawei/Command Line Tools`<br>`~/Huawei/Command Line Tools` |
+| Linux | `/opt/deveco-studio`<br>`/opt/Huawei DevEco Studio`<br>`~/deveco-studio` | `/opt/Huawei/Command Line Tools`<br>`~/Huawei/Command Line Tools`<br>`/opt/huawei/command-line-tools`<br>`~/command-line-tools` |
+
+Linux 的 CLT 是**扁平根**：官方 linux-x64 包解压后根下直接是 `version.txt` + `sdk/` + `bin/`，没有 `<root>/26.0.0/` 版本号子目录。插件两种布局都支持——根目录自带 `version.txt` 时按根识别（版本取 `# Version:` 行），否则扫版本号子目录。另外 Linux 上没有 DevEco Studio 发行版，`hdc` 除了 `<root>/sdk/default/openharmony/toolchains/hdc`，也认官方 devecocli 的 `DEVECO_CLI_CLT_PATH` 与独立 SDK 包的 `<root>/toolchains/hdc`。
 
 ## 持久化
 

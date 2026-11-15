@@ -162,10 +162,14 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
   - Windows: `C:\\Program Files\\Huawei\\DevEco Studio`、`C:\\Program Files (x86)\\Huawei\\DevEco Studio`、`C:\\DevEco Studio`
   - macOS: `/Applications/DevEco Studio.app/Contents`、`/Applications/Huawei DevEco Studio.app/Contents`、`~/Applications/DevEco Studio.app/Contents`
   - Linux: `/opt/deveco-studio`、`/opt/Huawei DevEco Studio`、`~/deveco-studio`
-- **CLT 根**（扫描 `<root>/<version>` 子目录）：
+- **CLT 根**（`<root>/<version>` 子目录 **或** 根自身带 `version.txt` 的扁平布局）：
   - Windows: `C:\\Program Files\\Huawei\\Command Line Tools`、`%LOCALAPPDATA%\\Huawei\\Command Line Tools`
   - macOS: `/Applications/Command Line Tools.app/Contents`、`~/Library/Huawei/Command Line Tools`
-  - Linux: `/opt/Huawei/Command Line Tools`、`~/Huawei/Command Line Tools`
+  - Linux: `/opt/Huawei/Command Line Tools`、`~/Huawei/Command Line Tools`、`/opt/huawei/command-line-tools`、`~/command-line-tools`
+
+  **Linux 的 CLT 是扁平根**（实测 CLT 26.0.0.621 linux-x64）：根下直接是 `version.txt` + `sdk/` + `bin/`，**没有 `<root>/26.0.0/`**。`scanCltCandidates` 因此先读 `<root>/version.txt`（`^#\s*Version:\s*(\S+)/`，与官方 `@deveco/deveco-cli` 的 `readCltVersion` 同规则，实现在 `readCltRootVersion`），命中则把根自身作为候选；否则才扫版本号子目录。**不要退回"只扫版本号子目录"**——那会让 Linux 自动发现恒为空、手填扁平根也解析不出 CLT。
+
+  **DevEco Studio 没有 Linux 发行版**（官方 CLI 在 Linux 上直接报 `DevEco Studio is not available on Linux. Set DEVECO_CLI_CLT_PATH ...`），Linux 的工具链来源只有 CLT。`resolveHdc` 因此也认 `DEVECO_CLI_CLT_PATH`（devecocli 自己的覆盖变量，Linux 上 CLT 的唯一声明方式）与独立 SDK 包的 `<root>/toolchains/hdc`。
 
 ### 8. 持久化
 

@@ -1580,9 +1580,13 @@ export function findOnPath (name) {
  * tool-provider resolution (observed on DevEco CLI 26 / Studio 6):
  *   1. $DEVECO_SDK_HOME        → <sdk>/default/openharmony/toolchains/hdc
  *   2. $DEVECO_HOME            → <home>/sdk/default/openharmony/toolchains/hdc
- *   3. resolved Studio/CLT root → <path>/sdk/default/openharmony/toolchains/hdc
- *   4. opts.extraRoots (discovery candidates) → same sub-path
- *   5. PATH
+ *   3. $DEVECO_CLI_CLT_PATH / $DEVECO_CLI_STUDIO_PATH / $DEVECO_PATH
+ *                              (devecocli's own overrides; Linux has no
+ *                               DevEco Studio, so CLT is declared with the first)
+ *   4. resolved Studio/CLT root → <path>/sdk/default/openharmony/toolchains/hdc
+ *   5. opts.extraRoots (discovery candidates) → same sub-path
+ *   6. flat layouts → <root>/toolchains/hdc (standalone `ohos-sdk` package)
+ *   7. PATH
  *
  * @param {object} [resolved] Toolchain resolution ({ source, exec?, path? }).
  * @param {object} [opts]
@@ -1591,6 +1595,9 @@ export function findOnPath (name) {
  */
 export function resolveHdc (resolved, opts = {}) {
   const sub = ['sdk', 'default', 'openharmony', 'toolchains', HDC_EXE]
+  // 独立 ohos-sdk 包（`ohos-sdk/linux`）没有 sdk/default 这层，hdc 在
+  // <root>/toolchains/hdc
+  const flatSub = ['toolchains', HDC_EXE]
   // mac 主修复：DevEco Studio / Command Line Tools 常以 .app 包形态给出
   // （`/Applications/DevEco Studio.app`，Finder 复制出来的就是这个），工具链
   // 根其实在 <xxx>.app/Contents——直接拿 .app 根拼 sdk/…必然落空，先补
@@ -1603,6 +1610,10 @@ export function resolveHdc (resolved, opts = {}) {
   const fromRoot = (root) => {
     const base = cleanRoot(root)
     return base ? join(base, ...sub) : null
+  }
+  const flatFromRoot = (root) => {
+    const base = cleanRoot(root)
+    return base ? join(base, ...flatSub) : null
   }
   const candidates = []
   const sdkHome = fromRoot(process.env.DEVECO_SDK_HOME)
@@ -1618,9 +1629,29 @@ export function resolveHdc (resolved, opts = {}) {
     const p = fromRoot(root)
     if (p) candidates.push(p)
   }
+  // devecocli 自己的显式覆盖变量：Linux 没有 DevEco Studio，CLT 只能用
+  // DEVECO_CLI_CLT_PATH 声明（只认前两个变量会「配了 CLT 却找不到 hdc」）。
+  // 追加在既有顺序之后，不改变 Windows/mac 的解析优先级。
+  for (const name of ['DEVECO_CLI_CLT_PATH', 'DEVECO_CLI_STUDIO_PATH', 'DEVECO_PATH']) {
+    const p = fromRoot(process.env[name])
+    if (p) candidates.push(p)
+  }
   for (const c of candidates) {
     try {
       if (existsSync(c)) return c
+    } catch (_) { /* keep scanning */ }
+  }
+  // 扁平布局兜底（独立 SDK 包 / 用户手填的 SDK 根）
+  for (const root of [
+    process.env.DEVECO_SDK_HOME,
+    process.env.DEVECO_CLI_CLT_PATH,
+    resolved && resolved.path,
+    ...extras,
+  ]) {
+    const p = flatFromRoot(root)
+    if (!p) continue
+    try {
+      if (existsSync(p)) return p
     } catch (_) { /* keep scanning */ }
   }
   // macOS：Studio 的 app bundle 里不必然带 sdk/（SDK 常由 SDK Manager 下载到
@@ -1635,6 +1666,11 @@ export function resolveHdc (resolved, opts = {}) {
       if (base) walkRoots.push(join(base, 'sdk'))
     }
     if (process.env.DEVECO_SDK_HOME) walkRoots.push(process.env.DEVECO_SDK_HOME)
+    // 设置里手填 / 自发现到的路径也要进 walk，否则「配了路径还是找不到 hdc」
+    for (const root of extras) {
+      const base = cleanRoot(root)
+      if (base) walkRoots.push(base)
+    }
     if (home) {
       walkRoots.push(join(home, 'Library', 'OpenHarmony'))
       walkRoots.push(join(home, 'Library', 'Huawei'))

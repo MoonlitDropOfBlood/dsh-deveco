@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux 工具链发现：官方 linux-x64 CLT 是**扁平根**（`<root>/version.txt` + `<root>/sdk/…`，没有 `<root>/26.0.0/` 版本号子目录），旧版只扫版本号子目录，导致 Linux 上自动发现恒为空、手填扁平根也解析不出 CLT（徽章停在「未配置」）。新增 `readCltRootVersion()`（读 `version.txt` 的 `^#\s*Version:\s*(\S+)/`，与官方 `@deveco/deveco-cli` 同规则），`scanCltCandidates` 现在把根自身也作为候选。
+- Linux hdc 解析：`resolveHdc` 新增官方 devecocli 的 `DEVECO_CLI_CLT_PATH` / `DEVECO_CLI_STUDIO_PATH` / `DEVECO_PATH`（Linux 没有 DevEco Studio，CLT 只能用第一个变量声明），以及独立 `ohos-sdk` 包的 `<root>/toolchains/hdc` 布局；非 Windows 的限深扫描同时覆盖设置里手填 / 自发现的路径。原顺序不变，新来源只是追加。
+
+### Changed
+
+- 设置 → HarmonyOS Suite 的路径占位文案按平台给出（Linux 显示 `/opt/huawei/command-line-tools`），不再恒贴 Windows 路径。
+- 新增 5 项单元测试（扁平根识别、`version.txt` 解析、无 devecocli 时配置扁平根可解析、`DEVECO_CLI_CLT_PATH`、独立 SDK 布局）；「源文件比 Source Map 新」用例改用 `utimesSync` 显式拨快 mtime（tmpfs/ext4 相邻写入常落在同一时间戳刻度，原写法会飘红）。
+
 ## [0.8.0] - 2026-11-12
 
 ### Added
