@@ -32,7 +32,7 @@ dsh-deveco/
 ├── harmony-source-map.mjs    # 零依赖：Hvigor Source Map v3 VLQ 解码、源码断点定位与调用栈反解
 ├── harmony-agent-tools.mjs   # agent 工具定义（harmony_project / harmony_debug / harmony_web_dom），执行经 host 端口注入
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 153 个独立核心单元测试（含工程模型、Source Map、源码断点/通知与 Web DOM）
+├── scripts/self-test.mjs     # 158 个独立核心单元测试（含工程模型、Source Map、源码断点/通知与 Web DOM）
 ├── scripts/e2e-agent-tools.mjs  # 模拟器跑 agent 工程/调试工具的端到端探针（不依赖 DSH）
 ├── scripts/e2e-source-map.mjs   # 真实 Hvigor 工程 Source Map 双向映射探针（不依赖设备/DSH）
 ├── scripts/e2e-breakpoint-notify.mjs  # 断点通知链路端到端探针（假 ArkVM 服务端，不依赖设备/DSH）
@@ -294,7 +294,7 @@ Host 经 `buildHarmonyAgentTools` 注册 `harmony_project`、`harmony_debug` 与
 
 ```bash
 npm run check              # 全部 JS 语法检查（含工程模型/Source Map/e2e 模块）
-npm test                   # 153 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP）
+npm test                   # 158 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP）
 node scripts/e2e-source-map.mjs --project <root> --source entry/src/main/ets/pages/Index.ets --line 296  # 真实 Hvigor Source Map 双向验证（不依赖设备/DSH）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --project <root> --source entry/src/main/ets/pages/Index.ets --source-line 296 --attach   # 模拟器跑工程 + 源码断点工具（不依赖 DSH）
 npm run e2e:notify             # 断点通知链路端到端（**不依赖设备**：假 ArkVM 服务端 + 真会话 + 真工具 + 真 Host 投递）
