@@ -2317,6 +2317,16 @@ window.__ModuleLoader__.load({
       const studios = discovery && Array.isArray(discovery.studios) ? discovery.studios : [];
       const clts = discovery && Array.isArray(discovery.clts) ? discovery.clts : [];
 
+      // Linux 没有 DevEco Studio（官方 CLI 在 Linux 上直接报 not available），
+      // 占位文案按平台给，不再恒贴 Windows 路径
+      const isLinux = discovery && discovery.platform === "linux";
+      const studioPlaceholder = isLinux
+        ? "（Linux 无 DevEco Studio，请配置下方 CLT 路径）"
+        : "C:\\Program Files\\Huawei\\DevEco Studio";
+      const cltPlaceholder = isLinux
+        ? "/opt/huawei/command-line-tools"
+        : "C:\\Program Files\\Huawei\\Command Line Tools\\26.0.0";
+
       const studioField = React.createElement(
         "div", { className: "harm-fieldRow" },
         React.createElement("div", { className: "harm-fieldHead" },
@@ -2324,7 +2334,7 @@ window.__ModuleLoader__.load({
         ),
         React.createElement("input", {
           className: "harm-fieldInput", type: "text", value: studioDraft,
-          placeholder: "C:\\Program Files\\Huawei\\DevEco Studio",
+          placeholder: studioPlaceholder,
           onChange: (e) => setStudioDraft(e.target.value),
         }),
         studios.length > 0
@@ -2347,7 +2357,7 @@ window.__ModuleLoader__.load({
         ),
         React.createElement("input", {
           className: "harm-fieldInput", type: "text", value: cltDraft,
-          placeholder: "C:\\Program Files\\Huawei\\Command Line Tools\\26.0.0",
+          placeholder: cltPlaceholder,
           onChange: (e) => setCltDraft(e.target.value),
         }),
         clts.length > 0

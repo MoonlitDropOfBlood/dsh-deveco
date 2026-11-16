@@ -17,7 +17,7 @@
  * 只允许使用 node 内置：node:fs, node:path。
  */
 
-import { existsSync, statSync, readdirSync } from 'node:fs'
+import { existsSync, statSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
 
@@ -175,7 +175,30 @@ export const DEFAULT_MACOS_CLT_ROOTS = [
 export const DEFAULT_LINUX_CLT_ROOTS = [
   '/opt/Huawei/Command Line Tools',
   envHome('Huawei', 'Command Line Tools'),
+  // Linux 官方的 CLT 包解压后是**扁平根**（根下直接 version.txt + sdk/，
+  // 没有 <root>/26.0.0/ 版本号子目录），这里补上实际分发路径
+  '/opt/huawei/command-line-tools',
+  envHome('command-line-tools'),
 ].filter(Boolean)
+
+/**
+ * 读 CLT 根自身的 version.txt（Linux 扁平根唯一的版本来源）。
+ * 官方 @deveco/deveco-cli 的 readCltVersion 用同一个正则。
+ *
+ * @param {string} root CLT 根目录
+ * @returns {{version: number[], raw: string}|null}
+ */
+export function readCltRootVersion(root) {
+  if (!root) return null
+  try {
+    const text = readFileSync(join(String(root), 'version.txt'), 'utf8')
+    const m = text.match(/^#\s*Version:\s*(\S+)/m)
+    const v = m ? parseVersion(m[1]) : null
+    return v ? { version: v, raw: m[1] } : null
+  } catch {
+    return null
+  }
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // 3. 辅助：路径规范化
@@ -316,6 +339,10 @@ export function scanCltCandidates(platform, cltRoot) {
   const cands = []
   for (const root of roots) {
     if (!root) continue
+    // Linux 的 CLT 是扁平根：根自身就带 version.txt，没有版本号子目录。
+    // 只扫子目录会让自动发现恒为空、手填扁平根也解析不出 CLT。
+    const self = readCltRootVersion(root)
+    if (self) cands.push({ path: String(root).replace(/[\\/]+$/, ''), version: self.version })
     let entries
     try {
       if (!existsSync(root)) continue

@@ -1,7 +1,7 @@
 // dsh-deveco 自测试：harmony-studio 路径探测 + harmony-config 配置互斥与自发现 + harmony-device 工具封装/HiLog/UI 解析。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, copyFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { loadConfig, saveConfig, setStudioPath, setCltPath, discoverAll, ensureDiscovery } from '../harmony-config.mjs'
@@ -1269,22 +1269,30 @@ test('parseProcessPids collects exact + suffix processes from ps -ef', () => {
   assert.deepEqual(parseProcessPids('short rows\n1 2 3 com.x', 'com.x'), [2])
 })
 
-// resolveHdc reads DEVECO_SDK_HOME / DEVECO_HOME from the environment; the
-// test machine may have either set, so tests pin them explicitly and restore.
+// resolveHdc reads DEVECO_SDK_HOME / DEVECO_HOME / DEVECO_CLI_CLT_PATH from the
+// environment; the test machine may have any of them set (Linux CLT wrappers
+// only export DEVECO_CLI_CLT_PATH), so tests pin them explicitly and restore.
 function withHdcEnv (sdkHome, devecoHome, fn) {
+  const overrides = ['DEVECO_CLI_CLT_PATH', 'DEVECO_CLI_STUDIO_PATH', 'DEVECO_PATH']
   const savedSdk = process.env.DEVECO_SDK_HOME
   const savedHome = process.env.DEVECO_HOME
+  const savedOverrides = overrides.map((name) => process.env[name])
   try {
     if (sdkHome === undefined) delete process.env.DEVECO_SDK_HOME
     else process.env.DEVECO_SDK_HOME = sdkHome
     if (devecoHome === undefined) delete process.env.DEVECO_HOME
     else process.env.DEVECO_HOME = devecoHome
+    for (const name of overrides) delete process.env[name]
     return fn()
   } finally {
     if (savedSdk === undefined) delete process.env.DEVECO_SDK_HOME
     else process.env.DEVECO_SDK_HOME = savedSdk
     if (savedHome === undefined) delete process.env.DEVECO_HOME
     else process.env.DEVECO_HOME = savedHome
+    overrides.forEach((name, i) => {
+      if (savedOverrides[i] === undefined) delete process.env[name]
+      else process.env[name] = savedOverrides[i]
+    })
   }
 }
 
@@ -1359,6 +1367,47 @@ test('resolveHdc prefers DEVECO_SDK_HOME / DEVECO_HOME over other sources', () =
   }
 })
 
+test('resolveHdc honours DEVECO_CLI_CLT_PATH (Linux CLT declaration)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-deveco-flatclt-'))
+  try {
+    const hdc = makeFlatCltRoot(root)
+    withHdcEnv(undefined, undefined, () => {
+      try {
+        // 只有 DEVECO_CLI_CLT_PATH：Linux 上 CLT 的唯一声明方式
+        // （dsh.service / 官方 wrapper 也只设这一个变量）
+        process.env.DEVECO_CLI_CLT_PATH = root
+        assert.equal(resolveHdc({ source: 'none' }), hdc)
+      } finally {
+        delete process.env.DEVECO_CLI_CLT_PATH
+      }
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('resolveHdc finds hdc in a standalone ohos-sdk root (<root>/toolchains/hdc)', () => {
+  const sdk = mkdtempSync(join(tmpdir(), 'dsh-deveco-ohossdk-'))
+  try {
+    const exe = process.platform === 'win32' ? 'hdc.exe' : 'hdc'
+    mkdirSync(join(sdk, 'toolchains'), { recursive: true })
+    const hdc = join(sdk, 'toolchains', exe)
+    writeFileSync(hdc, '')
+    withHdcEnv(undefined, undefined, () => {
+      // 独立 SDK 包没有 sdk/default/openharmony 这一层
+      assert.equal(resolveHdc({ source: 'none' }, { extraRoots: [sdk] }), hdc)
+      try {
+        process.env.DEVECO_SDK_HOME = sdk
+        assert.equal(resolveHdc({ source: 'none' }), hdc)
+      } finally {
+        delete process.env.DEVECO_SDK_HOME
+      }
+    })
+  } finally {
+    rmSync(sdk, { recursive: true, force: true })
+  }
+})
+
 test('execHdc spawns an .exe whose path contains spaces (shell:false)', async () => {
   // Regression: Windows `shell:true` + unquoted "...\DevEco Studio\...\hdc.exe"
   // split at the space and failed to launch. execHdc must spawn shell:false
@@ -1426,7 +1475,7 @@ test('execCli quotes a .cmd path containing spaces on Windows (shell:true)', asy
 // ---------------------------------------------------------------------------
 
 import {
-  parseVersion, parseDevecoToolVersion, normalizeStudioPath,
+  parseVersion, parseDevecoToolVersion, normalizeStudioPath, readCltRootVersion,
   DEFAULT_WINDOWS_STUDIO, DEFAULT_MACOS_STUDIO, DEFAULT_LINUX_STUDIO,
   DEFAULT_WINDOWS_CLT_ROOTS, DEFAULT_MACOS_CLT_ROOTS, DEFAULT_LINUX_CLT_ROOTS,
   scanStudioCandidates, scanCltCandidates, resolveCli,
@@ -1547,6 +1596,66 @@ test('scanStudioCandidates returns empty on test platform with no matches', () =
 test('scanCltCandidates returns empty for non-existent root', () => {
   const cands = scanCltCandidates('linux', '/non/existent/root')
   assert.equal(cands.length, 0)
+})
+
+// Linux 官方 CLT 包是**扁平根**（根下 version.txt + sdk/，没有
+// <root>/26.0.0/ 版本号子目录）。只扫子目录会让自动发现恒为空。
+function makeFlatCltRoot (root, version = '26.0.0.621') {
+  const exe = process.platform === 'win32' ? 'hdc.exe' : 'hdc'
+  mkdirSync(root, { recursive: true })
+  writeFileSync(join(root, 'version.txt'),
+    `# ======================\n# Command Line Tools(linux-x64)\n# Version: ${version}\n# ======================\n`)
+  const dir = join(root, 'sdk', 'default', 'openharmony', 'toolchains')
+  mkdirSync(dir, { recursive: true })
+  const hdc = join(dir, exe)
+  writeFileSync(hdc, '')
+  return hdc
+}
+
+test('readCltRootVersion reads the flat CLT version.txt', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-deveco-flatclt-'))
+  try {
+    makeFlatCltRoot(root)
+    const r = readCltRootVersion(root)
+    assert.deepEqual(r.version, [26, 0, 0])
+    // 无 version.txt → null（版本不能凭空猜）
+    const empty = mkdtempSync(join(tmpdir(), 'dsh-deveco-nover-'))
+    try {
+      assert.equal(readCltRootVersion(empty), null)
+    } finally {
+      rmSync(empty, { recursive: true, force: true })
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+test('scanCltCandidates accepts a flat CLT root', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-deveco-flatclt-'))
+  try {
+    makeFlatCltRoot(root)
+    const cands = scanCltCandidates('linux', root)
+    assert.equal(cands.length, 1)
+    assert.deepEqual(cands[0].version, [26, 0, 0])
+    // 尾部斜杠不能产生重复候选
+    assert.equal(scanCltCandidates('linux', `${root}/`).length, 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+test('resolveCli accepts a configured flat CLT root without devecocli', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-deveco-flatclt-'))
+  try {
+    makeFlatCltRoot(root)
+    // PATH 无 devecocli 是 Linux 用户的默认形态（devecocli 是独立 npm 包）
+    const r = resolveCli({ cltPath: root, pathEnv: '/empty', dshDevecoCli: '/nonexistent' })
+    assert.equal(r.source, 'clt')
+    assert.equal(r.minVersionOk, true)
+    assert.deepEqual(r.version, [26, 0, 0])
+    assert.equal(r.cliAvailable, false)
+    assert.match(r.message, /Command Line Tools 26\.0\.0/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -2299,6 +2408,10 @@ test('a source file newer than its Source Map is rejected instead of using stale
     const index = await loadHarmonySourceMapIndex(fixture.root)
     const resolved = index.resolveSourceBreakpoint({ sourcePath: fixture.source, sourceLine: 1 })
     writeFileSync(fixture.source, 'const a = 1\nconst changed = 2\nconst c = 3\n')
+    // 显式拨快源文件 mtime：tmpfs/ext4 上相邻两次写入常落在同一时间戳刻度
+    // （实测 delta 可 < 1 ms），单靠写完立刻 stat 会撞上 mapMtimeMs + 1 的容差
+    const bumped = resolved.mapMtimeMs + 2000
+    utimesSync(fixture.source, bumped / 1000, bumped / 1000)
     await assert.rejects(assertSourceBreakpointFresh(resolved, fixture.source, fixture.root), /尚未重新构建|比 Source Map 更新/)
   } finally {
     rmSync(fixture.root, { recursive: true, force: true })
