@@ -1,7 +1,7 @@
 // dsh-deveco 自测试：harmony-studio 路径探测 + harmony-config 配置互斥与自发现 + harmony-device 工具封装/HiLog/UI 解析。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, copyFileSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, existsSync, readFileSync, writeFileSync, copyFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { loadConfig, saveConfig, setStudioPath, setCltPath, discoverAll, ensureDiscovery } from '../harmony-config.mjs'
@@ -46,6 +46,13 @@ import {
   decodeVlqSegment, decodeSourceMapMappings, originalPositionFor, generatedPositionFor,
   loadHarmonySourceMapIndex, assertSourceBreakpointFresh,
 } from '../harmony-source-map.mjs'
+import {
+  GIT_ENV, runGitCommand,
+  buildGitRepoRootArgs, buildGitBranchArgs, buildGitVerifyHeadArgs,
+  buildGitStatusArgs, buildGitDiffArgs, buildGitBlameArgs,
+  parseGitStatusPorcelain, parseUnifiedDiffLineKinds, parseBlamePorcelain,
+  isoWithOffset, toGitRelPath, collectFileGitInfo, blameFileLine, prepareSaveContent,
+} from '../harmony-git.mjs'
 
 test('loadConfig returns empty when file missing', async () => {
   const tmp = mkdtempSync(join(tmpdir(), 'dsh-deveco-'))
@@ -2780,7 +2787,7 @@ test('WebDevToolsSession uses standard Chromium JSON-RPC and reports cdp-error s
 
 test('TYPERT manifest exposes webTargets/webDomRead with strict dual-shape codecs', async () => {
   const { TYPERT } = await import('../typert.host.js')
-  assert.equal(TYPERT.invocations.length, 24)
+  assert.equal(TYPERT.invocations.length, 27)
   for (const method of ['webTargets', 'webDomRead']) {
     const invocation = TYPERT.invocations.find((entry) => entry.method === method)
     assert.ok(invocation, `${method} invocation exists`)
@@ -2890,4 +2897,615 @@ test('harmony_web_dom agent tool maps targets and snapshot into bounded renderab
   assert.equal(snapshot.nodes[0].tag, '#document')
   assert.match(tool.output.render({ action: 'snapshot', format: 'tree' }, snapshot)[0].text, /div#app\.classA/)
   assert.match(tool.output.render({ action: 'snapshot', format: 'html' }, snapshot)[0].text, /<div id="app">/)
+})
+
+// ---- git (file viewer) ------------------------------------------------------
+
+/**
+ * Earlier toolchain tests pin `process.env.PATH` to '/empty' to probe the
+ * resolver and never restore it, so `git` is no longer spawnable by the time
+ * the git tests run. Capture the real PATH while the module loads (before any
+ * test mutates it) and put it back around every git call.
+ */
+const REAL_PATH = process.env.PATH || ''
+
+async function withRealPath (fn) {
+  const saved = process.env.PATH
+  process.env.PATH = REAL_PATH
+  try {
+    return await fn()
+  } finally {
+    if (saved === undefined) delete process.env.PATH
+    else process.env.PATH = saved
+  }
+}
+
+/**
+ * Replica of the gateway's JSON-safety rules for Remote payloads:
+ * no undefined, no null, no functions/symbols, no circular references.
+ * Optional fields must be attached only when they carry a value.
+ */
+function assertJsonSafe (value, label = 'value') {
+  const seen = new Set()
+  const walk = (node, path) => {
+    if (node === null) throw new Error(`${label}${path}: null is not allowed`)
+    if (node === undefined) throw new Error(`${label}${path}: undefined is not allowed`)
+    const type = typeof node
+    if (type === 'function' || type === 'symbol' || type === 'bigint') {
+      throw new Error(`${label}${path}: ${type} is not JSON-safe`)
+    }
+    if (type !== 'object') return
+    if (seen.has(node)) throw new Error(`${label}${path}: circular reference`)
+    seen.add(node)
+    if (Array.isArray(node)) {
+      node.forEach((entry, index) => walk(entry, `${path}[${index}]`))
+      return
+    }
+    for (const [key, entry] of Object.entries(node)) walk(entry, `${path}.${key}`)
+  }
+  walk(value, '')
+}
+
+/** Build a unified diff body out of hunk chunks. */
+function unifiedDiff (...chunks) {
+  return chunks.join('')
+}
+
+test('git status porcelain maps every XY form to one state token', () => {
+  assert.equal(parseGitStatusPorcelain(''), 'clean')
+  assert.equal(parseGitStatusPorcelain('\n'), 'clean')
+  assert.equal(parseGitStatusPorcelain('?? src/Index.ets\n'), 'untracked')
+  assert.equal(parseGitStatusPorcelain(' M src/Index.ets\n'), 'modified')
+  assert.equal(parseGitStatusPorcelain('M  src/Index.ets\n'), 'modified')
+  assert.equal(parseGitStatusPorcelain('MM src/Index.ets\n'), 'modified')
+  assert.equal(parseGitStatusPorcelain('A  src/Index.ets\n'), 'added')
+  assert.equal(parseGitStatusPorcelain('AM src/Index.ets\n'), 'added')
+  assert.equal(parseGitStatusPorcelain(' D src/Index.ets\n'), 'deleted')
+  assert.equal(parseGitStatusPorcelain('D  src/Index.ets\n'), 'deleted')
+  assert.equal(parseGitStatusPorcelain('R  old.ets -> new.ets\n'), 'renamed')
+  assert.equal(parseGitStatusPorcelain('C  old.ets -> new.ets\n'), 'copied')
+  assert.equal(parseGitStatusPorcelain('UU src/Index.ets\n'), 'conflict')
+  assert.equal(parseGitStatusPorcelain('AA src/Index.ets\n'), 'conflict')
+  assert.equal(parseGitStatusPorcelain('DD src/Index.ets\n'), 'conflict')
+})
+
+test('git diff classifies pure additions and never marks context lines', () => {
+  const diff = unifiedDiff(
+    '@@ -1,2 +1,3 @@\n',
+    ' line1\n',
+    '+line2 added\n',
+    ' line3\n',
+  )
+  const parsed = parseUnifiedDiffLineKinds(diff)
+  assert.deepEqual(parsed.changes, [{ line: 2, kind: 'add' }])
+  assert.equal(parsed.added, 1)
+  assert.equal(parsed.modified, 0)
+  assert.equal(parsed.deleted, 0)
+})
+
+test('git diff anchors a file-head deletion on line 1', () => {
+  const diff = unifiedDiff(
+    '@@ -1,3 +0,0 @@\n',
+    '-line1\n',
+    '-line2\n',
+    '-line3\n',
+  )
+  const parsed = parseUnifiedDiffLineKinds(diff)
+  assert.deepEqual(parsed.changes, [{ line: 1, kind: 'del' }])
+  assert.equal(parsed.deleted, 1)
+})
+
+test('git diff anchors a deletion on the last context line above the gap', () => {
+  const diff = unifiedDiff(
+    '@@ -1,5 +1,4 @@\n',
+    ' line1\n',
+    ' line2\n',
+    '-line3\n',
+    ' line4\n',
+    ' line5\n',
+  )
+  const parsed = parseUnifiedDiffLineKinds(diff)
+  assert.deepEqual(parsed.changes, [{ line: 2, kind: 'del' }])
+  assert.equal(parsed.deleted, 1)
+})
+
+test('git diff pairs a deletion run with the following addition run as mod', () => {
+  const diff = unifiedDiff(
+    '@@ -1,3 +1,3 @@\n',
+    ' line1\n',
+    '-line2\n',
+    '+line2 rewritten\n',
+    ' line3\n',
+  )
+  const parsed = parseUnifiedDiffLineKinds(diff)
+  assert.deepEqual(parsed.changes, [{ line: 2, kind: 'mod' }])
+  assert.equal(parsed.modified, 1)
+  assert.equal(parsed.added, 0)
+  assert.equal(parsed.deleted, 0)
+})
+
+test('git diff handles several hunks and ignores the no-newline marker', () => {
+  const diff = unifiedDiff(
+    '@@ -1,3 +1,3 @@\n',
+    ' line1\n',
+    '-line2\n',
+    '+line2 rewritten\n',
+    ' line3\n',
+    '\ No newline at end of file\n',
+    '@@ -10,2 +10,3 @@\n',
+    ' line10\n',
+    '+line11 added\n',
+    ' line12\n',
+  )
+  const parsed = parseUnifiedDiffLineKinds(diff)
+  assert.deepEqual(parsed.changes, [{ line: 2, kind: 'mod' }, { line: 11, kind: 'add' }])
+  assert.equal(parsed.added, 1)
+  assert.equal(parsed.modified, 1)
+})
+
+test('git diff never lets a delete anchor overwrite an add/mod line', () => {
+  const diff = unifiedDiff(
+    '@@ -1,3 +1,3 @@\n',
+    '+added first\n',
+    '-line2\n',
+    ' line3\n',
+  )
+  const parsed = parseUnifiedDiffLineKinds(diff)
+  assert.deepEqual(parsed.changes, [{ line: 1, kind: 'add' }])
+})
+
+test('git diff initialises the anchor at newStart-1 for a hunk without context', () => {
+  // The hunk starts with a deletion: the anchor must be the line above the
+  // gap (newStart - 1), not always line 1.
+  const diff = unifiedDiff(
+    '@@ -5,3 +5,2 @@\n',
+    '-old5\n',
+    '-old6\n',
+    ' old7\n',
+  )
+  const parsed = parseUnifiedDiffLineKinds(diff)
+  assert.deepEqual(parsed.changes, [{ line: 4, kind: 'del' }])
+})
+
+test('git diff keeps changes sorted and counts every kind', () => {
+  const diff = unifiedDiff(
+    '@@ -1,4 +1,5 @@\n',
+    ' line1\n',
+    '-line2\n',
+    '+line2 rewritten\n',
+    ' line3\n',
+    '+line4 added\n',
+    ' line5\n',
+  )
+  const parsed = parseUnifiedDiffLineKinds(diff)
+  const lines = parsed.changes.map((entry) => entry.line)
+  assert.deepEqual(lines, [...lines].sort((a, b) => a - b))
+  assert.equal(parsed.added, 1)
+  assert.equal(parsed.modified, 1)
+  assert.equal(parsed.deleted, 0)
+})
+
+test('git blame porcelain reuses the metadata of a commit across its lines', () => {
+  const output = [
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 1 1',
+    'author Test User',
+    'author-mail <test@example.com>',
+    'author-time 1794939738',
+    'author-tz +0800',
+    'summary first commit',
+    'filename a.ets',
+    '\tline1',
+    'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 2 1',
+    'author Other User',
+    'author-time 1794939800',
+    'author-tz +0000',
+    'summary second commit',
+    'filename a.ets',
+    '\tline2',
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 3 3 1',
+    '\tline3',
+    '',
+  ].join('\n')
+  const entries = parseBlamePorcelain(output)
+  assert.equal(entries.length, 3)
+  assert.equal(entries[0].line, 1)
+  assert.equal(entries[0].author, 'Test User')
+  assert.equal(entries[0].summary, 'first commit')
+  assert.equal(entries[0].date, '2026-11-18T02:22:18+08:00')
+  assert.equal(entries[1].line, 2)
+  assert.equal(entries[1].author, 'Other User')
+  assert.equal(entries[1].summary, 'second commit')
+  // The third line belongs to the first commit again — the metadata is reused.
+  assert.equal(entries[2].author, 'Test User')
+  assert.equal(entries[2].summary, 'first commit')
+  assert.equal(entries[2].date, entries[0].date)
+})
+
+test('git blame porcelain keeps the uncommitted pseudo commit and skips junk lines', () => {
+  const output = [
+    '0000000000000000000000000000000000000000 1 1 1',
+    'author Not Committed Yet',
+    'author-mail <not.committed.yet>',
+    'author-time 1794939738',
+    'author-tz +0800',
+    'summary Not Committed Yet',
+    'boundary',
+    'filename a.ets',
+    '\tline1',
+    'this line is not a blame header',
+    '',
+  ].join('\n')
+  const entries = parseBlamePorcelain(output)
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].hash, '0000000000000000000000000000000000000000')
+  assert.equal(entries[0].author, 'Not Committed Yet')
+  assert.equal(entries[0].summary, 'Not Committed Yet')
+  assert.equal(entries[0].line, 1)
+})
+
+test('isoWithOffset renders the author timezone and falls back to UTC', () => {
+  assert.equal(isoWithOffset(1794939738, '+0800'), '2026-11-18T02:22:18+08:00')
+  assert.equal(isoWithOffset(1794939738, '-0500'), '2026-11-17T13:22:18-05:00')
+  assert.equal(isoWithOffset(1794939738, 'bogus'), '2026-11-17T18:22:18Z')
+  assert.equal(isoWithOffset(1794939738, ''), '2026-11-17T18:22:18Z')
+})
+
+test('toGitRelPath returns a POSIX relative path and refuses paths outside the repo', () => {
+  const repoRoot = process.platform === 'win32' ? 'C:\\work\\repo' : '/work/repo'
+  const inside = process.platform === 'win32' ? 'C:\\work\\repo\\src\\main\\ets\\Index.ets' : '/work/repo/src/main/ets/Index.ets'
+  const outside = process.platform === 'win32' ? 'C:\\work\\other\\Index.ets' : '/work/other/Index.ets'
+  assert.equal(toGitRelPath(repoRoot, inside), 'src/main/ets/Index.ets')
+  assert.equal(toGitRelPath(repoRoot, outside), null)
+  assert.equal(toGitRelPath(repoRoot, repoRoot), null)
+  assert.equal(toGitRelPath('', inside), null)
+})
+
+test('git command builders put --literal-pathspecs first and the path after --', () => {
+  assert.deepEqual(buildGitRepoRootArgs(), ['rev-parse', '--show-toplevel'])
+  assert.deepEqual(buildGitBranchArgs(), ['branch', '--show-current'])
+  assert.deepEqual(buildGitVerifyHeadArgs(), ['rev-parse', '--verify', 'HEAD'])
+  const status = buildGitStatusArgs('src/Index.ets')
+  assert.equal(status[0], '--literal-pathspecs')
+  assert.equal(status[1], 'status')
+  assert.equal(status[status.length - 2], '--')
+  assert.equal(status[status.length - 1], 'src/Index.ets')
+  const diff = buildGitDiffArgs('src/Index.ets')
+  assert.equal(diff[0], '--literal-pathspecs')
+  assert.equal(diff[1], 'diff')
+  assert.equal(diff[diff.length - 2], '--')
+  assert.equal(diff[diff.length - 1], 'src/Index.ets')
+  const blame = buildGitBlameArgs('src/Index.ets', 12)
+  assert.equal(blame[0], '--literal-pathspecs')
+  assert.equal(blame[1], 'blame')
+  assert.ok(blame.includes('-L'))
+  assert.equal(blame[blame.indexOf('-L') + 1], '12,12')
+  assert.equal(blame[blame.length - 2], '--')
+  assert.equal(blame[blame.length - 1], 'src/Index.ets')
+  assert.deepEqual(GIT_ENV, { GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' })
+})
+
+test('runGitCommand reports success and a missing binary', async () => {
+  await withRealPath(async () => {
+    const version = await runGitCommand({ cwd: process.cwd(), args: ['--version'] })
+    assert.equal(version.ok, true)
+    assert.match(version.stdout, /git version/)
+    const missing = await runGitCommand({ cwd: process.cwd(), args: ['--version'], binary: 'dsh-deveco-no-such-git-binary' })
+    assert.equal(missing.ok, false)
+    assert.equal(missing.error.code, 'enoent')
+  })
+})
+
+/** Create a throw-away git repository and run `fn` inside it. */
+async function withTempGitRepo (fn) {
+  return withRealPath(async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-deveco-git-'))
+    const run = (args) => runGitCommand({ cwd: dir, args })
+    try {
+      const init = await run(['init', '-q'])
+      assert.equal(init.ok, true, init.stderr)
+      await run(['config', 'user.name', 'Test User'])
+      await run(['config', 'user.email', 'test@example.com'])
+      await run(['config', 'core.autocrlf', 'false'])
+      await run(['config', 'commit.gpgsign', 'false'])
+      return await fn({ dir, run })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
+
+test('git integration: a modified file reports state, branch and changed lines', async () => {
+  await withTempGitRepo(async ({ dir, run }) => {
+    writeFileSync(join(dir, 'base.ets'), 'line1\nline2\nline3\nline4\nline5\n')
+    writeFileSync(join(dir, 'clean.ets'), 'clean1\nclean2\n')
+    await run(['add', 'base.ets', 'clean.ets'])
+    const commit = await run(['commit', '-m', 'baseline commit'])
+    assert.equal(commit.ok, true, commit.stderr)
+
+    writeFileSync(join(dir, 'base.ets'), 'line1\nline2 rewritten\nline3\nline4\nline5\nline6 added\n')
+
+    const root = await runGitCommand({ cwd: dir, args: buildGitRepoRootArgs() })
+    const info = await collectFileGitInfo(runGitCommand, join(dir, 'base.ets'))
+    assert.equal(info.available, true)
+    assert.equal(info.state, 'modified')
+    assert.ok(info.branch && info.branch.length > 0)
+    assert.equal(info.repoRoot, root.stdout.trim())
+    assert.deepEqual(info.changes, [{ line: 2, kind: 'mod' }, { line: 6, kind: 'add' }])
+    assert.equal(info.added, 1)
+    assert.equal(info.modified, 1)
+    assert.equal(info.deleted, 0)
+    assert.equal(info.allAdded, undefined)
+
+    const clean = await collectFileGitInfo(runGitCommand, join(dir, 'clean.ets'))
+    assert.equal(clean.available, true)
+    assert.equal(clean.state, 'clean')
+    assert.deepEqual(clean.changes, [])
+  })
+})
+
+test('git integration: an untracked file is reported as untracked', async () => {
+  await withTempGitRepo(async ({ dir, run }) => {
+    writeFileSync(join(dir, 'base.ets'), 'line1\n')
+    await run(['add', 'base.ets'])
+    await run(['commit', '-m', 'baseline commit'])
+    writeFileSync(join(dir, 'new.ets'), 'fresh\n')
+    const info = await collectFileGitInfo(runGitCommand, join(dir, 'new.ets'))
+    assert.equal(info.available, true)
+    assert.equal(info.state, 'untracked')
+    assert.deepEqual(info.changes, [])
+  })
+})
+
+test('git integration: blame answers for a committed line and refuses an untracked file', async () => {
+  await withTempGitRepo(async ({ dir, run }) => {
+    writeFileSync(join(dir, 'base.ets'), 'line1\nline2\n')
+    await run(['add', 'base.ets'])
+    await run(['commit', '-m', 'baseline commit'])
+    writeFileSync(join(dir, 'new.ets'), 'fresh\n')
+
+    const blame = await blameFileLine(runGitCommand, join(dir, 'base.ets'), 1)
+    assert.equal(blame.available, true)
+    assert.equal(blame.entry.line, 1)
+    assert.equal(blame.entry.author, 'Test User')
+    assert.equal(blame.entry.summary, 'baseline commit')
+    assert.match(blame.entry.hash, /^[0-9a-f]{40}$/)
+    assert.match(blame.entry.date, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/)
+
+    const untracked = await blameFileLine(runGitCommand, join(dir, 'new.ets'), 1)
+    assert.equal(untracked.available, false)
+    assert.ok(untracked.reason)
+  })
+})
+
+test('git integration: a folder outside any repository degrades to no-repo', async () => {
+  await withRealPath(async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-deveco-norepo-'))
+    try {
+      writeFileSync(join(dir, 'a.ets'), 'line1\n')
+      const info = await collectFileGitInfo(runGitCommand, join(dir, 'a.ets'))
+      assert.equal(info.available, false)
+      assert.equal(info.reason, 'no-repo')
+      const blame = await blameFileLine(runGitCommand, join(dir, 'a.ets'), 1)
+      assert.equal(blame.available, false)
+      assert.equal(blame.reason, 'no-repo')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+test('fileGitInfo/fileGitBlame Remote methods validate the request and degrade quietly', async () => {
+  const { HarmonyDevEcoService } = await import('../index.js')
+  const service = Object.create(HarmonyDevEcoService.prototype)
+  service._ctx = { get: () => undefined }
+
+  const empty = await service.fileGitInfo({ path: '   ' })
+  assert.equal(empty.ok, false)
+  assert.equal(empty.error.code, 'invalid-request')
+
+  const noSession = await service.fileGitInfo({ path: 'src/Index.ets' })
+  assert.equal(noSession.ok, true)
+  assert.equal(noSession.value.available, false)
+  assert.equal(noSession.value.reason, 'no-session-cwd')
+
+  const badLine = await service.fileGitBlame({ path: 'src/Index.ets', line: 0 })
+  assert.equal(badLine.ok, false)
+  assert.equal(badLine.error.code, 'invalid-request')
+
+  const noLine = await service.fileGitBlame({ path: 'src/Index.ets' })
+  assert.equal(noLine.ok, false)
+  assert.equal(noLine.error.code, 'invalid-request')
+
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-deveco-norepo-'))
+  try {
+    writeFileSync(join(dir, 'a.ets'), 'line1\n')
+    const outside = await withRealPath(() => service.fileGitInfo({ path: join(dir, 'a.ets') }))
+    assert.equal(outside.ok, true)
+    assert.equal(outside.value.available, false)
+    assert.equal(outside.value.reason, 'no-repo')
+    assertJsonSafe(outside.value, 'fileGitInfo.value')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('fileGitInfo resolves a session-relative path against the session cwd', async () => {
+  const { HarmonyDevEcoService } = await import('../index.js')
+  await withTempGitRepo(async ({ dir, run }) => {
+    writeFileSync(join(dir, 'base.ets'), 'line1\nline2\n')
+    await run(['add', 'base.ets'])
+    await run(['commit', '-m', 'baseline commit'])
+
+    const service = Object.create(HarmonyDevEcoService.prototype)
+    service._ctx = {
+      get: (name) => (name === 'sessions'
+        ? new Map([['session-1', { header: { cwd: dir } }]])
+        : undefined),
+    }
+    const info = await service.fileGitInfo({ path: 'base.ets', sessionId: 'session-1' })
+    assert.equal(info.ok, true)
+    assert.equal(info.value.available, true)
+    assert.equal(info.value.state, 'clean')
+    assertJsonSafe(info.value, 'fileGitInfo.value')
+  })
+})
+
+test('TYPERT manifest exposes fileGitInfo/fileGitBlame with strict dual-shape codecs', async () => {
+  const { TYPERT } = await import('../typert.host.js')
+  assert.equal(TYPERT.invocations.length, 27)
+  for (const method of ['fileGitInfo', 'fileGitBlame']) {
+    const invocation = TYPERT.invocations.find((entry) => entry.method === method)
+    assert.ok(invocation, `${method} invocation exists`)
+    assert.equal(invocation.id, `dsh-deveco#harmonyDevEco/${method}`)
+    assert.equal(invocation.parameters.length, 1)
+    assert.equal(invocation.parameters[0].name, 'request')
+    assert.equal(invocation.parameters[0].codec.mode, 'strict')
+    assert.equal(typeof invocation.parameters[0].codec.schema.safeParse, 'function')
+    assert.equal(typeof invocation.parameters[0].codec.create().safeParse, 'function')
+    assert.equal(invocation.result.mode, 'strict')
+    assert.equal(typeof invocation.result.schema.safeParse, 'function')
+    assert.equal(typeof invocation.result.create().safeParse, 'function')
+  }
+
+  const info = TYPERT.invocations.find((entry) => entry.method === 'fileGitInfo')
+  assert.equal(info.parameters[0].codec.schema.safeParse({ path: 'a.ets' }).success, true)
+  assert.equal(info.parameters[0].codec.schema.safeParse({ path: 'a.ets', sessionId: 's1' }).success, true)
+  assert.equal(info.parameters[0].codec.schema.safeParse({}).success, false)
+  assert.equal(info.parameters[0].codec.schema.safeParse({ path: 42 }).success, false)
+
+  const blame = TYPERT.invocations.find((entry) => entry.method === 'fileGitBlame')
+  assert.equal(blame.parameters[0].codec.schema.safeParse({ path: 'a.ets', line: 3 }).success, true)
+  assert.equal(blame.parameters[0].codec.schema.safeParse({ path: 'a.ets' }).success, false)
+  assert.equal(blame.parameters[0].codec.schema.safeParse({ path: 'a.ets', line: 'x' }).success, false)
+
+  const unavailable = { ok: true, value: { available: false, reason: 'no-git' } }
+  assert.equal(info.result.schema.safeParse(unavailable).success, true)
+  assert.equal(blame.result.schema.safeParse({ ok: true, value: { available: false, reason: 'no-answer' } }).success, true)
+  assert.equal(info.result.schema.safeParse({ ok: true, value: { available: false, reason: 'bogus' } }).success, false)
+
+  const available = {
+    ok: true,
+    value: {
+      available: true,
+      repoRoot: '/work/repo',
+      branch: 'main',
+      state: 'modified',
+      changes: [{ line: 2, kind: 'mod' }],
+      added: 0,
+      modified: 1,
+      deleted: 0,
+    },
+  }
+  assert.equal(info.result.schema.safeParse(available).success, true)
+  assert.equal(blame.result.schema.safeParse({
+    ok: true,
+    value: {
+      available: true,
+      entry: { line: 2, hash: 'abc', author: 'A', date: '2026-11-18T02:22:18+08:00', summary: 's' },
+    },
+  }).success, true)
+  assert.equal(info.result.schema.safeParse({ ok: true, value: { available: true, state: 'weird' } }).success, false)
+
+  // Both payload shapes must survive the gateway's JSON-safety rules.
+  assertJsonSafe(unavailable.value, 'fileGitInfo.value')
+  assertJsonSafe(available.value, 'fileGitInfo.value')
+  assertJsonSafe({ available: true, entry: { line: 2, hash: 'abc', author: 'A', date: '2026-11-18T02:22:18+08:00', summary: 's' } }, 'fileGitBlame.value')
+})
+
+// ---- writeTextFile (file editor) --------------------------------------------
+
+test('prepareSaveContent keeps the EOL style of the original file', () => {
+  // CRLF original + LF content → CRLF
+  assert.equal(prepareSaveContent('a\r\nb\r\n', 'x\ny\n'), 'x\r\ny\r\n')
+  // LF original → LF
+  assert.equal(prepareSaveContent('a\nb\n', 'x\ny\n'), 'x\ny\n')
+  // A stray CRLF in the payload is normalized first (never doubled)
+  assert.equal(prepareSaveContent('a\r\nb\r\n', 'x\r\ny\n'), 'x\r\ny\r\n')
+  assert.equal(prepareSaveContent('a\nb\n', 'x\r\ny\n'), 'x\ny\n')
+})
+
+test('prepareSaveContent preserves the BOM without doubling it', () => {
+  assert.equal(prepareSaveContent('\uFEFFa\r\n', 'x\n'), '\uFEFFx\r\n')
+  // The payload already carries a BOM → it is not doubled
+  assert.equal(prepareSaveContent('\uFEFFa\r\n', '\uFEFFx\n'), '\uFEFFx\r\n')
+  // No BOM in the original → no BOM is added
+  assert.equal(prepareSaveContent('a\n', 'x\n'), 'x\n')
+})
+
+test('writeTextFile saves atomically, preserves EOL/BOM and refuses unknown files', async () => {
+  const { HarmonyDevEcoService } = await import('../index.js')
+  const service = Object.create(HarmonyDevEcoService.prototype)
+  service._ctx = { get: () => undefined }
+
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-deveco-write-'))
+  try {
+    // CRLF file
+    const crlf = join(dir, 'crlf.ets')
+    writeFileSync(crlf, 'line1\r\nline2\r\n')
+    const saved = await service.writeTextFile({ path: crlf, content: 'line1\nline2 edited\n' })
+    assert.equal(saved.ok, true)
+    assert.equal(saved.value.saved, true)
+    assert.equal(saved.value.path, crlf)
+    assert.equal(saved.value.bytes, Buffer.byteLength('line1\r\nline2 edited\r\n', 'utf8'))
+    assert.equal(readFileSync(crlf, 'utf8'), 'line1\r\nline2 edited\r\n')
+
+    // BOM + LF file
+    const bom = join(dir, 'bom.ets')
+    writeFileSync(bom, '\uFEFFline1\n')
+    const savedBom = await service.writeTextFile({ path: bom, content: 'line1\nline2\n' })
+    assert.equal(savedBom.ok, true)
+    assert.equal(readFileSync(bom, 'utf8'), '\uFEFFline1\nline2\n')
+
+    // Unknown file → not-found, and nothing is created
+    const missing = join(dir, 'missing.ets')
+    const notFound = await service.writeTextFile({ path: missing, content: 'x' })
+    assert.equal(notFound.ok, false)
+    assert.equal(notFound.error.code, 'not-found')
+    assert.equal(existsSync(missing), false)
+
+    // Invalid request
+    const noPath = await service.writeTextFile({ content: 'x' })
+    assert.equal(noPath.ok, false)
+    assert.equal(noPath.error.code, 'invalid-request')
+    const noContent = await service.writeTextFile({ path: crlf })
+    assert.equal(noContent.ok, false)
+    assert.equal(noContent.error.code, 'invalid-request')
+
+    // Too large
+    const tooLarge = await service.writeTextFile({ path: crlf, content: 'x'.repeat(2 * 1024 * 1024 + 1) })
+    assert.equal(tooLarge.ok, false)
+    assert.equal(tooLarge.error.code, 'too-large')
+
+    // No temp file is left behind
+    const leftovers = readdirSync(dir).filter((name) => name.includes('dsh-deveco-tmp'))
+    assert.deepEqual(leftovers, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('TYPERT manifest exposes writeTextFile and the invocation count is 27', async () => {
+  const { TYPERT } = await import('../typert.host.js')
+  assert.equal(TYPERT.invocations.length, 27)
+  const invocation = TYPERT.invocations.find((entry) => entry.method === 'writeTextFile')
+  assert.ok(invocation)
+  assert.equal(invocation.id, 'dsh-deveco#harmonyDevEco/writeTextFile')
+  assert.equal(invocation.parameters.length, 1)
+  assert.equal(invocation.parameters[0].name, 'request')
+  assert.equal(invocation.parameters[0].codec.mode, 'strict')
+  assert.equal(typeof invocation.parameters[0].codec.schema.safeParse, 'function')
+  assert.equal(typeof invocation.parameters[0].codec.create().safeParse, 'function')
+  assert.equal(invocation.result.mode, 'strict')
+  assert.equal(typeof invocation.result.schema.safeParse, 'function')
+
+  assert.equal(invocation.parameters[0].codec.schema.safeParse({ path: 'a.ets', content: 'x' }).success, true)
+  assert.equal(invocation.parameters[0].codec.schema.safeParse({ path: 'a.ets', content: 'x', sessionId: 's1' }).success, true)
+  assert.equal(invocation.parameters[0].codec.schema.safeParse({ path: 'a.ets' }).success, false)
+  assert.equal(invocation.parameters[0].codec.schema.safeParse({ content: 'x' }).success, false)
+  assert.equal(invocation.parameters[0].codec.schema.safeParse({ path: 'a.ets', content: 42 }).success, false)
+
+  const value = { ok: true, value: { path: '/tmp/a.ets', bytes: 12, saved: true } }
+  assert.equal(invocation.result.schema.safeParse(value).success, true)
+  assert.equal(invocation.result.schema.safeParse({ ok: true, value: { path: '/tmp/a.ets', bytes: 12 } }).success, false)
+  assertJsonSafe(value.value, 'writeTextFile.value')
 })

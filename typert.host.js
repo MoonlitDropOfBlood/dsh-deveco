@@ -582,6 +582,91 @@ const pathRequestSchema = z
   })
   .readonly();
 
+// ---- git (file viewer) schemas ---------------------------------------------
+
+/** Why git information is not available for a file. */
+const gitUnavailableReasonSchema = z
+  .enum(["no-git", "no-repo", "no-session-cwd", "git-failed", "no-answer"])
+  .readonly();
+
+/** The working-tree state of one file. */
+const gitFileStateSchema = z
+  .enum(["clean", "modified", "untracked", "added", "deleted", "renamed", "copied", "conflict"])
+  .readonly();
+
+/** One changed line: a 1-based line number and its change kind. */
+const gitLineChangeSchema = z
+  .object({
+    line: z.number().readonly(),
+    kind: z.union([z.literal("add"), z.literal("mod"), z.literal("del")]).readonly(),
+  })
+  .readonly();
+
+const fileGitInfoRequestSchema = z
+  .object({
+    path: z.string().readonly(),
+    sessionId: z.string().optional().readonly(),
+  })
+  .readonly();
+
+const fileGitBlameRequestSchema = z
+  .object({
+    path: z.string().readonly(),
+    line: z.number().readonly(),
+    sessionId: z.string().optional().readonly(),
+  })
+  .readonly();
+
+const writeTextFileRequestSchema = z
+  .object({
+    path: z.string().readonly(),
+    content: z.string().readonly(),
+    sessionId: z.string().optional().readonly(),
+  })
+  .readonly();
+
+const writeTextFileValueSchema = z
+  .object({
+    path: z.string().readonly(),
+    bytes: z.number().readonly(),
+    saved: z.boolean().readonly(),
+  })
+  .readonly();
+
+const fileGitInfoValueSchema = z
+  .object({
+    available: z.boolean().readonly(),
+    reason: gitUnavailableReasonSchema.optional().readonly(),
+    message: z.string().optional().readonly(),
+    repoRoot: z.string().optional().readonly(),
+    branch: z.string().optional().readonly(),
+    state: gitFileStateSchema.optional().readonly(),
+    changes: z.array(gitLineChangeSchema).optional().readonly(),
+    added: z.number().optional().readonly(),
+    modified: z.number().optional().readonly(),
+    deleted: z.number().optional().readonly(),
+    allAdded: z.boolean().optional().readonly(),
+  })
+  .readonly();
+
+const fileGitBlameValueSchema = z
+  .object({
+    available: z.boolean().readonly(),
+    reason: gitUnavailableReasonSchema.optional().readonly(),
+    message: z.string().optional().readonly(),
+    entry: z
+      .object({
+        line: z.number().readonly(),
+        hash: z.string().readonly(),
+        author: z.string().readonly(),
+        date: z.string().readonly(),
+        summary: z.string().readonly(),
+      })
+      .optional()
+      .readonly(),
+  })
+  .readonly();
+
 const rescanValueSchema = z
   .object({
     discovery: discoverySchema,
@@ -668,6 +753,18 @@ export const TYPERT = {
     iv("readTextFile", pathRequestSchema, readTextFileValueSchema,
       "Read a UTF-8 text file from an absolute host path (2 MiB cap) for the .ets sidebar viewer.",
       "/**\n * Read a UTF-8 text file from an absolute host path for the .ets viewer.\n * @param request - `{ path }` absolute host path.\n * @returns `{ path, content, bytes, truncated }`.\n */"),
+
+    iv("fileGitInfo", fileGitInfoRequestSchema, fileGitInfoValueSchema,
+      "Read the git status of one file for the .ets viewer's gutter: branch, working-tree state and the changed line numbers. Never fails the viewer — when git is missing, the folder is not a repository, or a git command fails, it answers `{ available: false, reason }`.",
+      "/**\n * Read the git status of one file (branch, state, changed lines).\n * @param request - `{ path, sessionId? }`; `path` is absolute or session-relative.\n * @returns `{ available: false, reason }` when git is unavailable, otherwise `{ available: true, repoRoot, branch, state, changes, added, modified, deleted, allAdded? }`.\n */"),
+
+    iv("fileGitBlame", fileGitBlameRequestSchema, fileGitBlameValueSchema,
+      "Blame one line of one file for the .ets viewer's hover tooltip (author, ISO date, commit summary). Never fails the viewer — untracked files, missing git or a failed command answer `{ available: false, reason }`.",
+      "/**\n * Blame one line of one file.\n * @param request - `{ path, line, sessionId? }`; `line` is a 1-based line number.\n * @returns `{ available: false, reason }` when there is no answer, otherwise `{ available: true, entry: { line, hash, author, date, summary } }`.\n */"),
+
+    iv("writeTextFile", writeTextFileRequestSchema, writeTextFileValueSchema,
+      "Save edited content back to an existing file for the .ets editor. The write is atomic (temp file + rename), keeps the original file's EOL style and BOM, refuses files that do not exist and payloads above 2 MiB.",
+      "/**\n * Save edited content back to an existing file.\n * @param request - `{ path, content, sessionId? }`; `content` is LF-normalized.\n * @returns `{ path, bytes, saved }`.\n */"),
 
     iv("rescan", null, rescanValueSchema,
       "Re-run toolchain auto-discovery and persist the result to disk.",
@@ -792,6 +889,30 @@ export const TYPERT = {
             summary: "Read a UTF-8 text file from an absolute host path (2 MiB cap).",
             jsDoc:
               "/**\n * Read a UTF-8 text file from an absolute host path for the .ets viewer.\n * @param request - `{ path }` absolute host path.\n * @returns `{ path, content, bytes, truncated }`.\n */",
+          },
+          {
+            kind: "method",
+            name: "fileGitInfo",
+            signature: "@Remote('fileGitInfo') async fileGitInfo(request: HarmonyDevEcoFileGitInfoRequest): Promise<HarmonyDevEcoFileGitInfoResult>",
+            summary: "Read the git status of one file (branch, state, changed lines) for the .ets viewer gutter.",
+            jsDoc:
+              "/**\n * Read the git status of one file (branch, state, changed lines).\n * @param request - `{ path, sessionId? }`.\n * @returns `{ available: false, reason }` when git is unavailable, otherwise the branch/state/changes of the file.\n */",
+          },
+          {
+            kind: "method",
+            name: "fileGitBlame",
+            signature: "@Remote('fileGitBlame') async fileGitBlame(request: HarmonyDevEcoFileGitBlameRequest): Promise<HarmonyDevEcoFileGitBlameResult>",
+            summary: "Blame one line of one file for the .ets viewer hover tooltip.",
+            jsDoc:
+              "/**\n * Blame one line of one file.\n * @param request - `{ path, line, sessionId? }`; `line` is 1-based.\n * @returns `{ available: false, reason }` when there is no answer, otherwise the blame entry of that line.\n */",
+          },
+          {
+            kind: "method",
+            name: "writeTextFile",
+            signature: "@Remote('writeTextFile') async writeTextFile(request: HarmonyDevEcoWriteTextFileRequest): Promise<HarmonyDevEcoWriteTextFileResult>",
+            summary: "Save edited content back to an existing file (atomic write, EOL/BOM preserved).",
+            jsDoc:
+              "/**\n * Save edited content back to an existing file.\n * @param request - `{ path, content, sessionId? }`.\n * @returns `{ path, bytes, saved }`.\n */",
           },
           {
             kind: "method",
@@ -977,6 +1098,41 @@ export const TYPERT = {
             name: "HarmonyDevEcoReadTextFileResult",
             declaration:
               "export type HarmonyDevEcoReadTextFileResult = { ok: true; value: { path: string; content: string; bytes: number; truncated: boolean } } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "HarmonyDevEcoFileGitInfoRequest",
+            declaration:
+              "export interface HarmonyDevEcoFileGitInfoRequest {\n    readonly path: string;\n    readonly sessionId?: string;\n}",
+          },
+          {
+            name: "HarmonyDevEcoFileGitBlameRequest",
+            declaration:
+              "export interface HarmonyDevEcoFileGitBlameRequest {\n    readonly path: string;\n    readonly line: number;\n    readonly sessionId?: string;\n}",
+          },
+          {
+            name: "HarmonyDevEcoGitLineChange",
+            declaration:
+              "export interface HarmonyDevEcoGitLineChange {\n    readonly line: number;\n    readonly kind: 'add'|'mod'|'del';\n}",
+          },
+          {
+            name: "HarmonyDevEcoFileGitInfoResult",
+            declaration:
+              "export type HarmonyDevEcoFileGitInfoResult = { ok: true; value: { available: boolean; reason?: 'no-git'|'no-repo'|'no-session-cwd'|'git-failed'|'no-answer'; message?: string; repoRoot?: string; branch?: string; state?: 'clean'|'modified'|'untracked'|'added'|'deleted'|'renamed'|'copied'|'conflict'; changes?: readonly HarmonyDevEcoGitLineChange[]; added?: number; modified?: number; deleted?: number; allAdded?: boolean } } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "HarmonyDevEcoFileGitBlameResult",
+            declaration:
+              "export type HarmonyDevEcoFileGitBlameResult = { ok: true; value: { available: boolean; reason?: 'no-git'|'no-repo'|'no-session-cwd'|'git-failed'|'no-answer'; message?: string; entry?: { line: number; hash: string; author: string; date: string; summary: string } } } | { ok: false; error: { code: string; message?: string } };",
+          },
+          {
+            name: "HarmonyDevEcoWriteTextFileRequest",
+            declaration:
+              "export interface HarmonyDevEcoWriteTextFileRequest {\n    readonly path: string;\n    readonly content: string;\n    readonly sessionId?: string;\n}",
+          },
+          {
+            name: "HarmonyDevEcoWriteTextFileResult",
+            declaration:
+              "export type HarmonyDevEcoWriteTextFileResult = { ok: true; value: { path: string; bytes: number; saved: boolean } } | { ok: false; error: { code: string; message?: string } };",
           },
           {
             name: "HarmonyDevEcoRescanRequest",

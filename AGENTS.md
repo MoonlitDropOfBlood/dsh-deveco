@@ -10,7 +10,7 @@
   - **HiLog 检查器**（id `dsh-deveco:hilog`，guide order 50）：实时日志流（**级别/包名/关键词过滤**——级别 chips 是进缓冲的门槛（读取环）；**关键词与包名是客户端实时视图过滤**：流跑着随时改随时生效、清空即回溯，包名经 `deviceProcessPids` 把 bundle 映射成 pid 集合后按行 pid 过滤；**日志内查找**：HiLog Tab 可见时接管 Ctrl/Cmd+F 弹出查找栏——当前视图内全部命中 `<mark>` 高亮 + 计数，Enter/↓/› 下一个、Shift+Enter/↑/‹ 上一个（循环）、Esc/× 关闭，当前命中行整行描边并平滑滚动定位，定位 effect 只 keyed on 查找状态不挂 lines（日志每秒追加不得拽回视图）），基于 `devecocli log --follow` 封装（未安装 devecocli 时自动降级 `hdc shell hilog`，见 §12）
   - **ArkUI Inspector**（id `dsh-deveco:arkui`，guide order 51）：**Chrome Elements 风格**——左侧设备截图（`uiScreenshot` 内联 dataUrl，点击截图命中节点并以**像素级 overlay** 按 `origBounds` 真实矩形高亮），右上 **可折叠** UI 树（层级引导线 + 自定义组件单独标注 + tap/scroll 标记 + 折叠全部/展开全部 + **树搜索**），右下节点属性（**全部设备原始属性** + **属性名/值搜索**）与盒子模型；顶部**窗口下拉**切换窗口；底部 Tap/Swipe/Text 操作
   - **Projects 数据面**：`listProjects` 识别 Host 工作目录中的 HarmonyOS 工程并保持紧凑 Remote 契约；完整工程模型走 agent 工具 `harmony_project`（当前无独立 Projects 图形页）
-- **官方右侧边栏注册 `.ets` 文件查看器**（id `dsh-deveco:arkts`，`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤，priority `extension` 优先于内置 text editor）。提供 ArkTS 语法高亮（关键字 + 装饰器 + 注释 + 字符串 + 数字）；内容经官方 `remote.workspaceFiles.read` 分页读取（绝对路径回退插件自有 `readTextFile` Remote）。
+- **官方右侧边栏注册 `.ets` 文件查看器/编辑器**（id `dsh-deveco:arkts`，`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤，priority `extension` 优先于内置 text editor）。提供 ArkTS 语法高亮（关键字 + 装饰器 + 注释 + 字符串 + 数字）；内容经官方 `remote.workspaceFiles.read` 分页读取（绝对路径回退插件自有 `readTextFile` Remote）。**git 增强**（`fileGitInfo` / `fileGitBlame`）：变更行在行号左侧画 2px 竖条并染色（增绿/改琥珀/删红）、悬停行显示该行 blame（作者 · 相对时间 + commit summary）；**可编辑并保存**（`writeTextFile`：原子写 + 保留原文件 EOL 与 BOM + 只覆盖已存在文件）。
 - **给对话里的 agent 提供工程模型、ArkTS 运行时调试器与 ArkWeb DOM 读取**（`ctx.tools` 的 `harmony_project` / `harmony_debug` / `harmony_web_dom`）：工程根/模块/Ability/权限/产物只读解析；调试支持 Hvigor Source Map 驱动的 `.ets` 源码断点与源码调用栈，底层通道＝`hdc fport ark:<pid>@Debugger` + 裸 socket 6 头 WS + CDP 风格 JSON-RPC，与 DevEco Studio 同款；Web DOM 走 `localabstract:webview_devtools_remote_<pid>` + 标准 Chromium CDP。**不重复造 devecocli 的轮子**：日志走 `devecocli log`，应用管理走 `devecocli device app`，ArkUI 树走本插件的 `harmony_ui_tree`；devecocli 没有 Web DOM 能力，由本插件补齐。
 - **设置面板新增「HarmonyOS Suite」页**（`settings.section`，order 40），分「工具链」「设备管理」两区。工具链区管理 DevEco Studio 与 HarmonyOS Command Line Tools 路径（三平台自发现、Studio/CLT 互斥、CLT 最低版本 26.0.0 校验）；设备管理区含**设备列表**（USB/网络目标，网络 `ip:port` 目标可一键断开）与 **IP 网络连接**表单（`hdc tconn <ip>:<port>`）。
 
@@ -19,7 +19,7 @@
 ```
 dsh-deveco/
 ├── package.json              # ESM 双面包：dsh.bundle.patch + dsh.client.web + exports(., /client, /typert, /package.json)
-├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，24 个 Remote 方法 + harmony_ui_tree/harmony_project/harmony_debug/harmony_web_dom 注册）
+├── index.js                  # Host 半：HarmonyDevEcoService（TypertRemoteService 子类，27 个 Remote 方法 + harmony_ui_tree/harmony_project/harmony_debug/harmony_web_dom 注册）
 ├── client.js                 # Client 半：__ModuleLoader__ bundle（Tab + Viewer + Settings + Remote mount）
 ├── typert.host.js            # Typert Host manifest：harmonyDevEco Remote 服务全部 invocation 的 zod schema
 ├── harmony-studio.mjs        # 零依赖：工具链路径探测（devecocli > CLT ≥26.0.0 > Studio）+ 版本解析 + 三平台默认路径
@@ -30,14 +30,16 @@ dsh-deveco/
 ├── harmony-webdevtools.mjs   # ArkWeb DevTools：socket/目标解析 + 一次性标准 CDP 会话 + DOM 扁平化/整子树截断 + 有界 outerHTML
 ├── harmony-project.mjs       # JSON5：HarmonyOS 应用根发现、产品/模块/Ability/权限/依赖/产物模型；签名材料脱敏
 ├── harmony-source-map.mjs    # 零依赖：Hvigor Source Map v3 VLQ 解码、源码断点定位与调用栈反解
+├── harmony-git.mjs           # 零依赖：git 命令构造/执行（spawn argv，--literal-pathspecs + `--`）、status/diff/blame 解析、路径归一、保存内容 EOL/BOM 保留
 ├── harmony-agent-tools.mjs   # agent 工具定义（harmony_project / harmony_debug / harmony_web_dom），执行经 host 端口注入
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 158 个独立核心单元测试（含工程模型、Source Map、源码断点/通知与 Web DOM）
+├── scripts/self-test.mjs     # 184 个独立核心单元测试（含工程模型、Source Map、源码断点/通知、Web DOM/CDP 与 git/保存）
 ├── scripts/e2e-agent-tools.mjs  # 模拟器跑 agent 工程/调试工具的端到端探针（不依赖 DSH）
 ├── scripts/e2e-source-map.mjs   # 真实 Hvigor 工程 Source Map 双向映射探针（不依赖设备/DSH）
 ├── scripts/e2e-breakpoint-notify.mjs  # 断点通知链路端到端探针（假 ArkVM 服务端，不依赖设备/DSH）
 ├── scripts/cdp-fixture.mjs           # 假 Chromium DevTools 服务（HTTP /json + RFC6455 WS + 最小 DOM 域）
 ├── scripts/e2e-web-dom.mjs           # Web DOM 端到端探针（假 CDP，不依赖设备/DSH）
+├── scripts/e2e-file-git.mjs          # git + 保存端到端探针（真 git 仓库 + 真 service：info→blame→write→再 info，含 CRLF 保留与 clean 回归，不依赖设备/DSH）
 ├── scripts/extract-release-notes.mjs # 按发布标签提取 CHANGELOG 对应版本段落（缺失/重复/为空即失败）
 ├── docs/arkts-debug-recon.md        # ArkTS 调试协议与 Source Map 实测调研（每条结论带证据与置信度）
 ├── docs/arkweb-web-dom-recon.md      # ArkWeb Web DOM 真机实测（Chrome/144、节点计数与 fport 踩坑）
@@ -110,7 +112,7 @@ function unwrap(res) {
 
 Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, message } }`。
 
-### 5. 24 个 Remote 方法
+### 5. 27 个 Remote 方法
 
 | 方法 | 用途 |
 |---|---|
@@ -138,6 +140,9 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 | `webDomRead` | 对指定 ArkWeb target 走标准 Chromium CDP `DOM.getDocument` / `querySelector` / `describeNode` / `getOuterHTML`，返回有界扁平 DOM 或 outerHTML；一次性会话，`finally` 只删本次 fport 规则 |
 | `listProjects` | 识别 Host cwd 中的鸿蒙应用根，按既有 schema 返回 `{name,path,bundleName,moduleCount}`；完整模型用 `harmony_project` |
 | `readTextFile` | 读取 UTF-8 文本文件（2 MiB 截断），.ets 查看器绝对路径回退用 |
+| `fileGitInfo` | 一个文件的 git 状态（.ets 查看器 gutter 用）：`{available, repoRoot, branch, state, changes[], added, modified, deleted, allAdded?}`；git 缺失/非仓库/命令失败一律降级为 `{available:false, reason}`，**绝不让预览器报错** |
+| `fileGitBlame` | 一个文件某一行的 blame（悬停 tooltip 用）：`{available, entry:{line,hash,author,date,summary}}`；只查单行（`-L n,n`），未跟踪文件/无仓库/无答案 → `{available:false, reason}` |
+| `writeTextFile` | 保存编辑后的内容回磁盘：**原子写**（同目录临时文件 + rename）、**保留原文件 EOL 与 BOM**、**只覆盖已存在文件**（ENOENT → `not-found`）、2 MiB 上限（`too-large`）；路径解析同 `fileGitInfo`（绝对 / session 相对） |
 
 ### 6. 工具链解析优先级（用户决策）
 
@@ -293,12 +298,13 @@ Host 经 `buildHarmonyAgentTools` 注册 `harmony_project`、`harmony_debug` 与
 ## 开发 / 验证
 
 ```bash
-npm run check              # 全部 JS 语法检查（含工程模型/Source Map/e2e 模块）
-npm test                   # 158 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP）
+npm run check              # 全部 JS 语法检查（含工程模型/Source Map/git 模块/e2e 模块）
+npm test                   # 184 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP、git 解析与保存）
 node scripts/e2e-source-map.mjs --project <root> --source entry/src/main/ets/pages/Index.ets --line 296  # 真实 Hvigor Source Map 双向验证（不依赖设备/DSH）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --project <root> --source entry/src/main/ets/pages/Index.ets --source-line 296 --attach   # 模拟器跑工程 + 源码断点工具（不依赖 DSH）
 npm run e2e:notify             # 断点通知链路端到端（**不依赖设备**：假 ArkVM 服务端 + 真会话 + 真工具 + 真 Host 投递）
 npm run e2e:webdom             # Web DOM 端到端（**不依赖设备**：假 Chromium HTTP /json + RFC6455 WS + 真 CDP 会话）
+npm run e2e:filegit            # git + 保存端到端（**不依赖设备/DSH**：真 git 仓库 + 真 service，info→blame→write→再 info，含 CRLF 保留与 clean 回归）
 node scripts/e2e-web-dom.mjs   # 同上，直接执行
 node docs/recon-scripts/arkts-debug-probe-skip.mjs --bundle <pkg>    # 探针：setSkipAllPauses 能不能压掉逐脚本启动暂停
 node docs/recon-scripts/arkts-debug-probe-break.mjs --bundle <pkg>   # 探针：skip=false 后断点是否仍命中（配 devecocli ui click 触发）
@@ -332,6 +338,9 @@ dsh plugin --profile web add .   # 本地安装/重装
 - **必须导出 `TYPERT` 对象且 shape 严格**（实测）：dsh-typert-loader 的 `validateTypertManifest` 要求 `export const TYPERT = { package, face:"host", schemas:[], invocations:[...], model:{services:[...], events:[...], objects:[...]} }`。`events`/`objects` 必须是数组（哪怕空）；缺 `model.events` 报 `TYPERT.model.events must be an array`。invocation 的 parameters/result codec 必须 `mode:"strict"` 且 schema 是 zod v4 实例。
 - **profile package.json 绝不能写 BOM**（大坑，实测）：DSH 的 `readProfileManifest` 直接 `JSON.parse` profile 的 `package.json`；任何 UTF-8 BOM 都会让它抛 `Unexpected token '﻿'` 崩溃——**整个 profile 起不来**。Windows PowerShell `Set-Content -Encoding UTF8` 默认带 BOM；改 `~/.dsh/profiles/web/package.json` 必须用无 BOM 编码（`.NET WriteAllText + UTF8Encoding(false)`，或 `dsh plugin add` 官方路径）。
 - **Remote 返回值必须「网关 JSON-safe」**：可选字段**有值才挂 key**（`if (x !== undefined) out.x = x`），union 里的空值用 `false`/`""` 不要用 `null`；不可有循环引用或函数。self-test 跑真实 git/工具仓的返回值跑 strict schema + 等价 assertJsonSafe 复刻——**新增/修改 Remote 方法的返回结构必须过它**。
+- **git 调用必须「spawn argv + literal pathspec」**（`harmony-git.mjs`）：① **不用 shell**，直接 `spawn("git", argv)`；② 全局 `--literal-pathspecs` **前置于子命令**（`["--literal-pathspecs","status",…]`），否则含 `*`/`[` 的路径会被 git 当 glob 展开；③ 路径参数**前面必须有 `--`**（`["…","--",rel]`），避免路径被当成 revision；④ env 固定带 `GIT_OPTIONAL_LOCKS=0`（只读不抢索引锁）与 `LC_ALL=C`（输出可解析）；⑤ 有超时（10 s）与输出上限（8 MiB）。**任何 git 失败都降级为 `available:false` 或空 changes，绝不让预览器报错**（git 没装 / 不在仓库 / 命令失败是三种不同 reason）。
+- **diff 变更行判定**：从 `git diff HEAD --no-color` 的 unified diff 按 hunk 头计数走（不靠猜文本）。删除行**锚在间隙上方那一行**（`lastNew` 初始化为 `newStart - 1`，不是 0）；未被配对的删除行才落 `del`，配对成功的算 `mod`；**锚点不覆盖已标记的 add/mod 行**；上下文行永不标记。`git blame --porcelain -L n,n` 未提交行的 hash 是全 0，作者显示 "Not Committed Yet"；日期按 **作者时区偏移**输出 ISO 8601（如 `2026-11-18T01:02:03+08:00`）。
+- **保存文件要保留 EOL 与 BOM**：`writeTextFile` 用**同目录临时文件 + rename** 原子写（失败 best-effort `unlink` 临时文件）；**只覆盖已存在文件**（不新建）；内容先归一为 LF，若原文件是 CRLF 再转回 CRLF；BOM 原样保留且**不重复加**。
 - **路径归一化**：Windows 路径用 `node:path.resolve` 归一化为反斜杠；用户粘贴带前导/尾随空格或引号时，`harmony-studio.normalizeStudioPath` 会清洗。
 - **HiLog 流管理**：`_streams` Map 持有 `child`（spawn 进程）+ `buffer`（已解析的 hilog 行）；buffer 上限 5000 行防内存膨胀；`ctx.effect(() => () => killAll())` 在 plugin dispose 时清理。
 - **HiLog 过滤语义（2026-10 真机实测，防再犯）**：devecocli 的 `--keyword`/`--bundle-name` 在 `--follow` 下**其实是生效的**（实测 keyword `com`/中文都正确过滤，底层翻译成 `hilog -e '<kw>'` / `-P <pid>`）——用户报「不生效」的真因是**过滤参数只在 spawn 时快照一次**，流跑起来后改输入框毫无反应。修复（用户决策）：**关键词/包名改为纯客户端实时视图过滤**（流照常全量接收，缓冲不丢历史，输入即筛、清空即回溯；包名经 `deviceProcessPids` 把 bundle 映射成 pid 集合按行 pid 过滤，精确匹配 + `:` 后缀进程，点分名如 `x.backup` 不算同包）；UI **不再**向 `hilogStreamStart` 传 keyword/bundle（服务端预滤会让未命中的行永远到不了缓冲，破坏可回溯性）；级别 chips 维持读取环过滤（进缓冲门槛，防 D 级刷屏挤掉 IWE）。

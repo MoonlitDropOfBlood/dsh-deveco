@@ -58,10 +58,12 @@
 { "action": "snapshot", "target_id": "<target-id>", "selector": "div#app", "depth": 8, "max_nodes": 400 }
 ```
 
-### .ets 文件查看器
+### .ets 文件编辑器（git 增强）
 - 注册为官方侧边栏 file tab（`patterns: ["dsh-resource://file/**"]` + `canOpen` 按扩展名过滤），`extension` 优先级优先于内置 text editor
 - 提供 ArkTS 语法高亮：关键字 + 装饰器（@Entry /@Component /@State 等）+ 注释 + 字符串 + 数字
-- 内容经官方 `remote.workspaceFiles.read` 分页读取；绝对路径文件回退插件自有 `readTextFile` Remote
+- **git 信息显示**（参考抽屉编辑器的 VS Code 风格，完全自研）：变更行行号左侧 2px 竖条 + 行号染色（增绿/改琥珀/删红）；悬停行显示 blame（作者 · 相对时间 + commit summary）；meta 行显示分支/状态/增删改计数并可手动刷新；git 缺失或非仓库时静默降级，不影响代码显示
+- **可编辑并保存**：Ctrl/Cmd+S 或保存按钮；原子写回磁盘并保留原文件 EOL 与 BOM；脏标记与保存状态反馈；中文输入法组字正常；截断读取或超 2000 行的文件只读预览（禁止编辑，防止写坏文件）
+- 内容经官方 `remote.workspaceFiles.read` 分页读取；绝对路径文件回退插件自有 `readTextFile` Remote；git 信息与保存走 `fileGitInfo` / `fileGitBlame` / `writeTextFile` Remote
 
 ### 设置 → HarmonyOS Suite
 

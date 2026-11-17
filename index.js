@@ -23,9 +23,9 @@ import { randomUUID, randomBytes } from "node:crypto";
 import net from "node:net";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import {
   ensureDiscovery,
@@ -102,6 +102,12 @@ import {
   WebDevToolsError,
 } from "./harmony-webdevtools.mjs";
 import { buildDebuggerForwardRemoveArgs, createDebugNoticeMessage, decideDebugNoticeDelivery } from "./harmony-debugger.mjs";
+import {
+  runGitCommand,
+  collectFileGitInfo,
+  blameFileLine,
+  prepareSaveContent,
+} from "./harmony-git.mjs";
 
 /**
  * How many consecutive debugger wakes one agent may get before the notices
@@ -491,6 +497,9 @@ export class HarmonyDevEcoService extends TypertRemoteService {
     markRemoteMethod(this, "webDomRead", "webDomRead");
     markRemoteMethod(this, "listProjects", "listProjects");
     markRemoteMethod(this, "readTextFile", "readTextFile");
+    markRemoteMethod(this, "fileGitInfo", "fileGitInfo");
+    markRemoteMethod(this, "fileGitBlame", "fileGitBlame");
+    markRemoteMethod(this, "writeTextFile", "writeTextFile");
 
     // Agent 工具面：把 DevEco 调试源取树注册为 `harmony_ui_tree` 工具，
     // 让对话里的 agent 可直接调用（`ctx.tools`，dsh-tools 的 defineTool）。
@@ -883,6 +892,9 @@ export class HarmonyDevEcoService extends TypertRemoteService {
   /** Hard cap for the ArkTS viewer: files larger than 2 MiB are truncated. */
   static get READ_TEXT_FILE_MAX_BYTES() { return 2 * 1024 * 1024; }
 
+  /** Hard cap for the ArkTS editor: payloads larger than 2 MiB are refused. */
+  static get WRITE_TEXT_FILE_MAX_BYTES() { return 2 * 1024 * 1024; }
+
   /**
    * Read a UTF-8 text file from an absolute host path for the `.ets` sidebar
    * viewer. The client parses the `dsh-resource://file/absolute/...` address
@@ -907,6 +919,143 @@ export class HarmonyDevEcoService extends TypertRemoteService {
       const code = (e && e.code === "ENOENT") ? "not-found" : "read-failed";
       return err(code, msg);
     }
+  }
+
+  /**
+   * Resolve the workspace root of one session.
+   *
+   * `ctx.get("sessions")` is the "use it if it exists" accessor — the plugin
+   * does not inject the service, so it must not be a hard dependency. The
+   * lookup mirrors dsh-api-workspace-files (`sessions.get(id)?.header?.cwd`).
+   *
+   * @param {unknown} sessionId
+   * @returns {string} the cwd, or "" when it cannot be resolved
+   */
+  _sessionCwd(sessionId) {
+    if (!sessionId || typeof sessionId !== "string") return "";
+    try {
+      const sessions = (typeof this._ctx.get === "function") ? this._ctx.get("sessions") : undefined;
+      if (!sessions || typeof sessions.get !== "function") return "";
+      const session = sessions.get(sessionId);
+      const header = session ? session.header : undefined;
+      const cwd = header ? header.cwd : undefined;
+      return (typeof cwd === "string" && cwd) ? cwd : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /**
+   * Resolve a viewer path into an absolute host path.
+   *
+   * Absolute paths are used as-is; a relative path is resolved against the
+   * session working directory (the viewer sends session-scoped relative paths
+   * with forward slashes).
+   *
+   * @param {string} rawPath
+   * @param {unknown} sessionId
+   * @returns {{abs: string} | {error: {available: false, reason: string}}}
+   */
+  _resolveViewerPath(rawPath, sessionId) {
+    if (isAbsolute(rawPath)) return { abs: resolve(rawPath) };
+    const cwd = this._sessionCwd(sessionId);
+    if (!cwd) return { error: { available: false, reason: "no-session-cwd" } };
+    return { abs: resolve(cwd, rawPath) };
+  }
+
+  /**
+   * Git information for one file — branch, working-tree state and the changed
+   * line numbers the `.ets` viewer paints into its gutter.
+   *
+   * Never fails the viewer: when git is missing, the folder is not a
+   * repository, or a git command fails, the method answers
+   * `{ available: false, reason }` instead of throwing.
+   */
+  async fileGitInfo(request) {
+    const rawPath = (request && typeof request.path === "string") ? request.path.trim() : "";
+    if (!rawPath) return err("invalid-request", "path required");
+    const sessionId = request ? request.sessionId : undefined;
+    const resolved = this._resolveViewerPath(rawPath, sessionId);
+    if (resolved.error) return ok(resolved.error);
+    try {
+      const value = await collectFileGitInfo(runGitCommand, resolved.abs);
+      return ok(value);
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      return ok({ available: false, reason: "git-failed", message: msg });
+    }
+  }
+
+  /**
+   * Blame one line of one file — the tooltip the `.ets` viewer shows when the
+   * user hovers a line.
+   *
+   * Like `fileGitInfo` this never throws: untracked files, missing git or a
+   * failed command answer `{ available: false, reason }`.
+   */
+  async fileGitBlame(request) {
+    const rawPath = (request && typeof request.path === "string") ? request.path.trim() : "";
+    if (!rawPath) return err("invalid-request", "path required");
+    const line = request ? request.line : undefined;
+    if (!Number.isInteger(line) || line <= 0) {
+      return err("invalid-request", "line must be a positive integer");
+    }
+    const sessionId = request ? request.sessionId : undefined;
+    const resolved = this._resolveViewerPath(rawPath, sessionId);
+    if (resolved.error) return ok(resolved.error);
+    try {
+      const value = await blameFileLine(runGitCommand, resolved.abs, line);
+      return ok(value);
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      return ok({ available: false, reason: "git-failed", message: msg });
+    }
+  }
+
+  /**
+   * Save the edited content of one file back to disk.
+   *
+   * The write is atomic (temp file in the same directory + rename), keeps the
+   * original file's EOL style and BOM, and only ever overwrites a file that
+   * already exists — the editor must never create a new file behind the
+   * user's back.
+   */
+  async writeTextFile(request) {
+    const rawPath = (request && typeof request.path === "string") ? request.path.trim() : "";
+    if (!rawPath) return err("invalid-request", "path required");
+    const content = request ? request.content : undefined;
+    if (typeof content !== "string") return err("invalid-request", "content required");
+    if (content.length > HarmonyDevEcoService.WRITE_TEXT_FILE_MAX_BYTES) {
+      return err("too-large", `content exceeds ${HarmonyDevEcoService.WRITE_TEXT_FILE_MAX_BYTES} characters`);
+    }
+    const sessionId = request ? request.sessionId : undefined;
+    const resolved = this._resolveViewerPath(rawPath, sessionId);
+    if (resolved.error) return err("invalid-request", "cannot resolve path without a session cwd");
+    const abs = resolved.abs;
+
+    let original;
+    try {
+      original = await readFile(abs, "utf8");
+    } catch (e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      const code = (e && e.code === "ENOENT") ? "not-found" : "write-failed";
+      return err(code, code === "not-found" ? `file does not exist: ${abs}` : msg);
+    }
+
+    const finalContent = prepareSaveContent(original, content);
+    const bytes = Buffer.byteLength(finalContent, "utf8");
+    const tmpPath = `${abs}.dsh-deveco-tmp-${randomUUID()}`;
+    try {
+      await writeFile(tmpPath, finalContent, "utf8");
+      await rename(tmpPath, abs);
+    } catch (e) {
+      // Best effort cleanup — the original file is untouched when the rename
+      // did not happen.
+      try { await unlink(tmpPath); } catch (_) { /* nothing to clean up */ }
+      const msg = (e && e.message) ? e.message : String(e);
+      return err("write-failed", msg);
+    }
+    return ok({ path: abs, bytes, saved: true });
   }
 
   // ---- device commands -----------------------------------------------------

@@ -4,6 +4,45 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-18
+
+### Added
+
+- **.ets 查看器升级为带 git 信息的编辑器**（参考抽屉编辑器 dsh-better-sidebar 的 VS Code 风格 git 显示，完全自研、零新增依赖、不依赖其任何代码）：
+  - **git gutter**：变更行行号左侧 2px 竖条 + 行号染色（增绿 / 改琥珀 / 删红）；未跟踪文件全部行标新增；干净文件保留竖条占位，行号不横移。
+  - **悬停 blame**：鼠标悬停行显示该行 blame 的纯文本 tooltip（作者 · 相对时间 + commit summary）；250ms 延迟、按路径+行记忆化（上限 500），git 信息刷新即失效；未跟踪文件不请求。
+  - **meta 行 git 段**：分支徽章、状态文案（干净/已修改/未跟踪/已暂存新增/冲突…）、+增 ~改 −删 计数、手动刷新；git 缺失/非仓库/查询失败显示对应灰字提示，代码与高亮照常显示。
+  - **编辑与保存**：透明 textarea 叠在高亮层上（gutter 独立成列、行高实测同步、滚动条宽度补偿、末尾空行高度补偿），Tab 插 2 空格、Enter 自动缩进、Ctrl/Cmd+S 或保存按钮；脏标记「● 未保存」/保存中/已保存/保存失败反馈；中文 IME 组字期间文字可见且不被回写打断。**截断读取或超 2000 行的文件只读预览、禁止编辑与保存**（防止把截断内容写回毁文件）。
+- **3 个新 Remote**（总数 24 → 27）：
+  - `fileGitInfo`：一个文件的分支 / 工作区状态 / 变更行与计数；git 缺失、非仓库、命令失败一律降级 `{available:false, reason}`，绝不让预览器报错。
+  - `fileGitBlame`：单行 blame（`-L n,n`），悬停才取；无答案降级 `available:false`。
+  - `writeTextFile`：**原子写**（同目录临时文件 + rename，失败清理）、**保留原文件 EOL 与 BOM**、**只覆盖已存在文件**（ENOENT → not-found）、2 MiB 上限；路径解析支持绝对 / session 相对（sessions.header.cwd）。
+- 新零依赖模块 `harmony-git.mjs`（命令构造/执行、status/diff/blame 解析、EOL/BOM 保留）与端到端探针 `scripts/e2e-file-git.mjs`（`npm run e2e:filegit`：真 git 仓库 + 真 service，info→blame→write→再 info，含 CRLF 保留与 clean 回归，不依赖设备/DSH）。
+
+### Changed
+
+- diff 变更行判定按 hunk 头计数走（不猜文本）：删除行锚在间隙上方一行（`lastNew` 初始 `newStart - 1`）；del-run 与紧随 add-run 配对记 `mod`；锚点不覆盖已标记的 add/mod 行；context 行永不标记。
+- blame 日期按**作者时区偏移**输出 ISO 8601；未提交行 hash 全 0（git 的 "Not Committed Yet"）。
+- git 调用统一 `spawn("git", argv)`（不用 shell）+ 全局 `--literal-pathspecs` 前置于子命令 + 路径在 `--` 之后 + `GIT_OPTIONAL_LOCKS=0` / `LC_ALL=C` + 10s 超时 / 8 MiB 输出上限。
+
+### Validation
+
+- 184 项单元测试通过（`npm run check` + `npm test`，含新增 22 项 git/保存测试与真 git 集成）；`npm run e2e:filegit` 29/29 通过。
+
+### 已知限制（后续迭代）
+
+- git 标记与悬停 blame 反映**上次保存**的版本；未保存编辑期间插入/删除行会使行号标记漂移（meta 有「● 未保存」提示，blame tooltip 标注「对应上次保存版本」）。
+- 无 Ctrl+F 查找、无外部磁盘变更监听、**关闭标签页不确认未保存改动**（请及时 Ctrl+S）；Tab 缩进固定 2 空格（不读 .editorconfig）。
+- 可编辑上限按**打开时**行数判定（≤ 2000 行且读取未截断）；打开后编辑增长不受该上限限制，保存只受 Host 2 MiB 约束。
+
+### 📦 安装
+
+```bash
+dsh plugin --profile web add @duke-dsh-plugins/dsh-deveco
+```
+
+也可使用本 Release 附件中的 tgz 包。安装或更新后必须重启 DSH 生效。
+
 ## [0.8.1] - 2026-11-16
 
 ### Fixed

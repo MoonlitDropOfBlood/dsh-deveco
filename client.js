@@ -46,7 +46,6 @@ window.__ModuleLoader__.load({
 .harm-pane{max-width:none;height:100%;min-height:0;overflow:hidden;padding:14px 16px}
 .harm-pane .harm-scroll,.harm-pane .harm-tree{flex:1;min-height:0;max-height:none}
 .ark-root{display:flex;flex-direction:column;height:100%;min-height:0}
-.ark-root .harm-scroll{flex:1;min-height:0;max-height:none}
 .harm-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .harm-head-title{font-size:16px;font-weight:500;line-height:24px;margin:0;flex:1}
 .harm-status{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;min-height:18px}
@@ -67,6 +66,7 @@ window.__ModuleLoader__.load({
 .harm-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);margin-top:4px}
 .harm-banner{padding:8px 12px;border-radius:8px;font-size:12px;line-height:18px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
 .harm-banner-warn{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#f5b942) 10%,transparent);border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#f5b942) 30%,transparent);color:var(--dsw-alias-state-warn-primary,#f5b942)}
+.harm-banner-err{background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#e5484d) 10%,transparent);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#e5484d) 30%,transparent);color:var(--dsw-alias-state-error-primary,#e5484d)}
 .harm-badge{display:inline-flex;align-items:center;height:22px;padding:0 10px;border-radius:999px;font-size:12px;line-height:22px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-weight:500}
 .harm-badge-ok{background:var(--dsw-alias-state-success-primary,#2fb37d);color:#fff;border-color:transparent}
 .harm-badge-warn{background:var(--dsw-alias-state-warn-primary,#f5b942);color:#fff;border-color:transparent}
@@ -260,13 +260,60 @@ window.__ModuleLoader__.load({
 .harm-cardDiscard:disabled,.harm-cardSave:disabled{opacity:.4;cursor:default}
 .harm-cardDiscard:focus-visible,.harm-cardSave:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 
-/* ArkTS syntax highlight */
-.ark-line{display:flex;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:20px;padding:0 8px;white-space:pre}
-.ark-line:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.04))}
+/* ArkTS syntax highlight —— 编辑器布局（透明 textarea 叠在高亮层上） */
 .ark-lineno{flex:none;width:52px;color:var(--dsw-alias-label-tertiary);text-align:right;padding-right:14px;user-select:none;font-size:11px}
-.ark-code{flex:1;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word;min-width:0}
 .ark-kw{color:var(--shiki-token-keyword,#c586c0);font-weight:600}.ark-str{color:var(--shiki-token-string,#ce9178)}.ark-num{color:var(--shiki-token-constant,#b5cea8)}.ark-com{color:var(--shiki-token-comment,#6a9955);font-style:italic}.ark-deco{color:var(--shiki-token-function,#dcdcaa)}.ark-fn{color:var(--shiki-token-function,#dcdcaa)}.ark-type{color:var(--shiki-token-link,#4ec9b0)}
 .ark-meta{color:var(--dsw-alias-label-secondary);font-size:11px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2)}
+.ark-metaMain{color:var(--dsw-alias-label-secondary)}
+.ark-metaRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* ---- 编辑器主体：gutter 独立成列 + 高亮层叠透明 textarea ---- */
+.ark-editor{flex:1;min-height:0;display:flex;position:relative;overflow:hidden;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
+.ark-gutter{flex:none;width:70px;overflow:hidden;user-select:none;position:relative;background:var(--dsw-alias-bg-layer-2);border-right:1px solid var(--dsw-alias-border-l1)}
+.ark-gutterInner{will-change:transform;padding-top:8px}
+.ark-gcell{display:flex;align-items:stretch;height:20px;line-height:20px;overflow:hidden}
+.ark-gcell .ark-lineno{flex:1;width:auto;padding-right:10px}
+.ark-codearea{flex:1;min-width:0;position:relative}
+/* 高亮层与 textarea 必须共享完全一致的度量（font/padding/white-space/
+   word-break/tab-size/letter-spacing/border/margin/宽度），否则字符错位。 */
+.ark-highlight,.ark-input{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:20px;padding:8px;margin:0;border:none;letter-spacing:normal;tab-size:2;white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;box-sizing:border-box}
+.ark-highlight{position:absolute;inset:0;overflow:hidden;pointer-events:none;color:var(--dsw-alias-label-primary)}
+.ark-hl{display:block;min-height:20px}
+.ark-input{position:absolute;inset:0;resize:none;overflow:auto;background:transparent;color:transparent;-webkit-text-fill-color:transparent;caret-color:var(--dsw-alias-label-primary);outline:none}
+.ark-input::selection{background:color-mix(in srgb,var(--dsw-alias-brand-primary,#4a7dff) 30%,transparent)}
+.ark-input::placeholder{color:var(--dsw-alias-label-tertiary)}
+/* ---- git 装饰：变更行竖条 + 行号染色 + blame tooltip ---- */
+.ark-gitbar{flex:none;width:2px;align-self:stretch;background:transparent}
+.ark-gitbar-add{background:var(--dsw-alias-state-success-primary,#2fb37d)}
+.ark-gitbar-mod{background:var(--dsw-alias-state-warn-primary,#f5b942)}
+.ark-gitbar-del{background:var(--dsw-alias-state-error-primary,#e5484d)}
+.ark-lineno-add{color:var(--dsw-alias-state-success-primary,#2fb37d)}
+.ark-lineno-mod{color:var(--dsw-alias-state-warn-primary,#f5b942)}
+.ark-lineno-del{color:var(--dsw-alias-state-error-primary,#e5484d)}
+.ark-blameTip{position:absolute;z-index:30;pointer-events:none;max-width:min(420px,calc(100% - 80px));padding:6px 9px;border-radius:6px;font-size:11px;line-height:16px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);box-shadow:0 4px 12px rgba(0,0,0,.18)}
+.ark-blameTip-meta{color:var(--dsw-alias-label-secondary)}
+.ark-blameTip-sum{color:var(--dsw-alias-label-primary);word-break:break-word}
+.ark-gitMeta{display:inline-flex;align-items:center;gap:6px}
+.ark-gitBranch{display:inline-flex;align-items:center;height:18px;padding:0 8px;border-radius:999px;font-size:11px;line-height:18px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+.ark-gitState{color:var(--dsw-alias-label-secondary);font-size:11px}
+.ark-gitState-clean{color:var(--dsw-alias-state-success-primary,#2fb37d)}
+.ark-gitState-dirty{color:var(--dsw-alias-state-warn-primary,#f5b942)}
+.ark-gitState-err{color:var(--dsw-alias-state-error-primary,#e5484d)}
+.ark-gitCounts{font-size:11px;font-variant-numeric:tabular-nums;display:inline-flex;gap:6px}
+.ark-gitAdd{color:var(--dsw-alias-state-success-primary,#2fb37d)}
+.ark-gitMod{color:var(--dsw-alias-state-warn-primary,#f5b942)}
+.ark-gitDel{color:var(--dsw-alias-state-error-primary,#e5484d)}
+.ark-gitRefresh{appearance:none;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);padding:0 7px;font-size:12px;line-height:18px}
+.ark-gitRefresh:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l1)}
+.ark-gitRefresh:focus-visible,.ark-saveBtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.ark-gitHint{color:var(--dsw-alias-label-tertiary);font-size:11px}
+/* ---- 编辑状态：脏标记 / 保存按钮 / 保存提示 ---- */
+.ark-dirty{color:var(--dsw-alias-state-warn-primary,#f5b942);font-size:11px}
+.ark-saved{color:var(--dsw-alias-state-success-primary,#2fb37d);font-size:11px}
+.ark-saveErr{color:var(--dsw-alias-state-error-primary,#e5484d);font-size:11px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ark-saveBtn{appearance:none;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);padding:1px 10px;font-size:11px;line-height:18px}
+.ark-saveBtn:hover:not(:disabled){border-color:var(--dsw-alias-border-l1)}
+.ark-saveBtn:disabled{opacity:.45;cursor:not-allowed}
+.ark-readonlyNote{color:var(--dsw-alias-label-tertiary);font-size:11px}
 `;
 
     // ---- Settings navigation ----------------------------------------------
@@ -306,6 +353,9 @@ window.__ModuleLoader__.load({
         method("setStudioPath", ["request"]),
         method("setCltPath", ["request"]),
         method("readTextFile", ["request"]),
+        method("fileGitInfo", ["request"]),
+        method("fileGitBlame", ["request"]),
+        method("writeTextFile", ["request"]),
         method("rescan", []),
         method("deviceList", []),
         method("deviceInfo", ["request"]),
@@ -567,45 +617,595 @@ window.__ModuleLoader__.load({
       return out;
     }
 
+    // ---- git 辅助（factory 作用域；不依赖任何第三方库）--------------------
+    // blame 记忆化：key = path + '\0' + line → Promise<entry|null>；上限 500，
+    // 超出整体清空。gitInfo 刷新时按 path 丢弃该文件的记忆。
+    const GIT_BLAME_CACHE = new Map();
+    const GIT_BLAME_CACHE_MAX = 500;
+
+    function gitBlameKey(path, line) {
+      return String(path) + "\0" + String(line);
+    }
+
+    function forgetBlameForPath(path) {
+      const prefix = String(path) + "\0";
+      for (const key of Array.from(GIT_BLAME_CACHE.keys())) {
+        if (key.startsWith(prefix)) GIT_BLAME_CACHE.delete(key);
+      }
+    }
+
+    // 取单行 blame；任何失败（无 git / 无仓库 / 未跟踪 / 命令失败）→ null
+    // （tooltip 不显示），绝不抛出到 UI。
+    //
+    // cachePath 是缓存身份（会话作用域下带 sessionId，避免不同会话的同名
+    // 相对路径互相污染）；reqPath 是发给 Host 的路径（契约要求：相对路径
+    // 必须原样传）。
+    function loadBlameEntry(cachePath, reqPath, line, sessionId) {
+      const key = gitBlameKey(cachePath, line);
+      const hit = GIT_BLAME_CACHE.get(key);
+      if (hit) return hit;
+      const pending = (async () => {
+        try {
+          if (!remote) return null;
+          const req = { path: reqPath, line: line };
+          if (sessionId) req.sessionId = sessionId;
+          const r = unwrap(await remote.fileGitBlame(req));
+          if (!r.ok || !r.value || r.value.available !== true || !r.value.entry) return null;
+          return r.value.entry;
+        } catch (e) {
+          return null;
+        }
+      })();
+      GIT_BLAME_CACHE.set(key, pending);
+      if (GIT_BLAME_CACHE.size > GIT_BLAME_CACHE_MAX) GIT_BLAME_CACHE.clear();
+      // 失败（null）不长期缓存：瞬时错误后下次悬停可重试，不必手动刷新 git。
+      pending.then((entry) => {
+        if (entry === null && GIT_BLAME_CACHE.get(key) === pending) GIT_BLAME_CACHE.delete(key);
+        return entry;
+      });
+      return pending;
+    }
+
+    // 相对时间（中文）：<60s 刚刚 / <60min N 分钟前 / <24h N 小时前 /
+    // <30d N 天前 / 否则 YYYY-MM-DD；非法日期 → 原串截断。
+    function relativeTime(iso) {
+      if (typeof iso !== "string" || !iso) return "";
+      const t = Date.parse(iso);
+      if (!isFinite(t)) return iso.length > 24 ? iso.slice(0, 24) + "…" : iso;
+      const diff = Date.now() - t;
+      if (diff < 0) return "刚刚";
+      const s = Math.floor(diff / 1000);
+      if (s < 60) return "刚刚";
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + " 分钟前";
+      const h = Math.floor(m / 60);
+      if (h < 24) return h + " 小时前";
+      const d = Math.floor(h / 24);
+      if (d < 30) return d + " 天前";
+      const dt = new Date(t);
+      const p2 = (n) => (n < 10 ? "0" + n : String(n));
+      return dt.getFullYear() + "-" + p2(dt.getMonth() + 1) + "-" + p2(dt.getDate());
+    }
+
+    const GIT_STATE_LABEL = {
+      clean: "干净",
+      modified: "已修改",
+      untracked: "未跟踪",
+      added: "已暂存新增",
+      deleted: "已删除",
+      renamed: "重命名",
+      copied: "复制",
+      conflict: "冲突",
+    };
+
+    // meta 行的 git 状态段（数组，交给 ArktsCodeView 渲染）。
+    function gitMetaNodes(gitInfo, gitLoading, onRefresh) {
+      if (gitLoading) {
+        return [React.createElement("span", { key: "gload", className: "ark-gitState" }, "git…")];
+      }
+      if (!gitInfo || gitInfo.available !== true) {
+        if (!gitInfo) return [];
+        const reason = gitInfo.reason || "";
+        const text = reason === "no-git" ? "未安装 git"
+          : reason === "no-repo" ? "非 git 仓库"
+          : reason === "no-session-cwd" ? "无法定位工作目录"
+          : reason === "git-failed" ? "git 查询失败"
+          : "git 不可用";
+        return [
+          React.createElement("span", { key: "gna", className: "ark-gitState", title: gitInfo.message || "" }, text),
+          // 不可用时也给刷新入口：装好 git / 移进仓库后可直接重试。
+          React.createElement("button", {
+            key: "grefresh", className: "ark-gitRefresh", type: "button", title: "重试 git 查询",
+            onMouseDown: (e) => e.preventDefault(), onClick: onRefresh,
+          }, "↻"),
+        ];
+      }
+      const state = gitInfo.state || "clean";
+      const label = GIT_STATE_LABEL[state] || state;
+      const nodes = [];
+      nodes.push(React.createElement(
+        "span",
+        { key: "gbranch", className: "ark-gitBranch", title: "当前分支" },
+        "⎇ " + (gitInfo.branch || "HEAD"),
+      ));
+      const stateClass = state === "clean" ? " ark-gitState-clean"
+        : (state === "conflict" || state === "deleted") ? " ark-gitState-err"
+        : state === "untracked" ? ""
+        : " ark-gitState-dirty";
+      nodes.push(React.createElement(
+        "span",
+        { key: "gstate", className: "ark-gitState" + stateClass },
+        label,
+      ));
+      const added = gitInfo.added || 0;
+      const modified = gitInfo.modified || 0;
+      const deleted = gitInfo.deleted || 0;
+      if (state === "untracked") {
+        nodes.push(React.createElement("span", { key: "guntracked", className: "ark-gitState" }, "全部行视为新增"));
+      } else if (added || modified || deleted) {
+        nodes.push(React.createElement(
+          "span",
+          { key: "gcounts", className: "ark-gitCounts" },
+          React.createElement("span", { key: "ga", className: "ark-gitAdd" }, "+" + added),
+          React.createElement("span", { key: "gm", className: "ark-gitMod" }, "~" + modified),
+          React.createElement("span", { key: "gd", className: "ark-gitDel" }, "−" + deleted),
+        ));
+      }
+      nodes.push(React.createElement(
+        "button",
+        { key: "grefresh", className: "ark-gitRefresh", type: "button", title: "刷新 git 信息", onMouseDown: (e) => e.preventDefault(), onClick: onRefresh },
+        "↻",
+      ));
+      nodes.push(React.createElement("span", { key: "ghint", className: "ark-gitHint" }, "悬停行看 blame"));
+      return nodes;
+    }
+
+    // 编辑器可编辑的硬上限：超过 2000 行的文件只读预览（防止在大文件上编辑）。
+    const ARK_MAX_EDITABLE_LINES = 2000;
+    const ARK_MAX_RENDER_LINES = 2000;
+    const ARK_EDITOR_PAD = 8;
+
     function ArktsCodeView(props) {
       const content = props.content || "";
+      const editable = !!props.editable;
       // 全文一次扫描（模板串/块注释跨行状态正确携带），每行一个 token 数组。
-      const allLines = tokenizeArkts(content);
-      const maxLines = 2000;
-      const truncated = allLines.length > maxLines;
-      const view = truncated ? allLines.slice(0, maxLines) : allLines;
-      const rows = [];
-      for (let i = 0; i < view.length; i++) {
-        const tokens = view[i];
-        rows.push(
-          React.createElement(
-            "div",
-            { key: i, className: "ark-line" },
-            React.createElement("span", { className: "ark-lineno" }, String(i + 1)),
+      // 必须缓存：加了 hover state 后每次 render 都重扫全文会明显卡顿。
+      const allLines = React.useMemo(() => tokenizeArkts(content), [content]);
+      // 渲染截断只用于「只读大文件」；可编辑时绝不截断——截断用户自己的
+      // 编辑内容会静默吞输入（editable 按加载时行数判定，编辑中不会翻转）。
+      const truncated = !editable && allLines.length > ARK_MAX_RENDER_LINES;
+      const view = truncated ? allLines.slice(0, ARK_MAX_RENDER_LINES) : allLines;
+      // textarea 的文本必须与高亮层渲染的行数一致（只读截断时只放前 N 行），
+      // 否则滚动到底后两层会错位。原始行按 "\n" 切（与 tokenizer 的分行一致，
+      // tokenizer 跳过 \r）。
+      const taValue = truncated
+        ? content.split("\n").slice(0, ARK_MAX_RENDER_LINES).map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l)).join("\n")
+        : content;
+      // 文件以换行结尾时，最后一个空行在 textarea 里不占视觉行（浏览器把末尾
+      // 换行当作行终止符），但高亮层会渲染这一行 → 给 textarea 补一行
+      // padding-bottom，两层滚动高度才完全一致，末尾空行也能滚到。
+      const trailingNewline = /\n$/.test(taValue);
+      const inputPadBottom = trailingNewline ? (ARK_EDITOR_PAD + 20) : ARK_EDITOR_PAD;
+      const gitInfo = props.gitInfo || null;
+      // 变更行 → kind 的映射（useMemo 依赖 gitInfo；不可用时为空）
+      const kindMap = React.useMemo(() => {
+        const map = new Map();
+        if (!gitInfo || gitInfo.available !== true) return map;
+        const changes = Array.isArray(gitInfo.changes) ? gitInfo.changes : [];
+        for (const c of changes) {
+          if (c && typeof c.line === "number" && c.kind) map.set(c.line, c.kind);
+        }
+        return map;
+      }, [gitInfo]);
+      // 未跟踪 / HEAD 未出生的已暂存新文件 → 渲染范围内全部行标 add
+      const allAdd = !!(gitInfo && gitInfo.available === true
+        && (gitInfo.state === "untracked" || gitInfo.allAdded === true));
+
+      // ---- DOM refs ----
+      const taRef = React.useRef(null);
+      const hlRef = React.useRef(null);
+      const gutterInnerRef = React.useRef(null);
+      const codeareaRef = React.useRef(null);
+      const tipRef = React.useRef(null);
+      // 行高实测（不是 行号×固定行高：长行会换行）。
+      const [lineHeights, setLineHeights] = React.useState([]);
+      const lineHeightsRef = React.useRef([]);
+      const tipAnchorRef = React.useRef(0);
+      const tipHeightRef = React.useRef(0);
+      const tipLineHeightRef = React.useRef(20);
+      const scrollTopRef = React.useRef(0);
+      // IME 组字中：禁止把外部值回写 textarea（会把中文组字打断）。
+      const composingRef = React.useRef(false);
+
+      const measureLines = React.useCallback(() => {
+        const hl = hlRef.current;
+        const ta = taRef.current;
+        if (!hl) return;
+        // textarea 的竖向滚动条会吃掉内容宽度 → 高亮层补同样的 padding-right，
+        // 否则两层的换行点不同，字符会错位。
+        if (ta) {
+          const sbw = ta.offsetWidth - ta.clientWidth;
+          const want = (ARK_EDITOR_PAD + sbw) + "px";
+          if (hl.style.paddingRight !== want) hl.style.paddingRight = want;
+        }
+        const nodes = hl.children;
+        const heights = new Array(nodes.length);
+        for (let i = 0; i < nodes.length; i++) {
+          const h = nodes[i].offsetHeight || 0;
+          heights[i] = h > 0 ? h : 20;
+        }
+        lineHeightsRef.current = heights;
+        setLineHeights((prev) => {
+          if (prev.length === heights.length) {
+            let same = true;
+          for (let i = 0; i < heights.length; i++) if (prev[i] !== heights[i]) { same = false; break; }
+            if (same) return prev;
+          }
+          return heights;
+        });
+      }, []);
+
+      React.useLayoutEffect(() => { measureLines(); }, [content, view.length, measureLines]);
+
+      // textarea 是「非受控」的（受控 textarea 会在 IME 组字期间被 React 回写
+      // value，中文输入直接坏掉）。代价是外部换文件时 value 不会自动更新 →
+      // 这里手动同步（组字期间不碰）。
+      React.useLayoutEffect(() => {
+        const ta = taRef.current;
+        if (!ta) return;
+        if (composingRef.current) return;
+        if (ta.value === taValue) return;
+        ta.value = taValue;
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+        measureLines();
+      }, [taValue, measureLines]);
+
+      React.useLayoutEffect(() => {
+        const el = codeareaRef.current;
+        if (!el || typeof ResizeObserver === "undefined") return undefined;
+        const ro = new ResizeObserver(() => measureLines());
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, [measureLines]);
+
+      // tooltip 定位（命令式，避免每帧 re-render 2000 行）。
+      // anchor 是该行在「高亮层内容坐标系」里的上边缘；显示位置 = anchor - scrollTop。
+      // 上方空间不够时落在该行「下方」——不盖住用户正在看的那一行。
+      const placeTip = React.useCallback(() => {
+        const el = tipRef.current;
+        if (!el) return;
+        const y = tipAnchorRef.current - scrollTopRef.current;
+        const h = tipHeightRef.current;
+        if (y < h) {
+          el.style.top = (y + tipLineHeightRef.current) + "px";
+          el.style.transform = "none";
+        } else {
+          el.style.top = y + "px";
+          el.style.transform = "translateY(-100%)";
+        }
+      }, []);
+
+      // textarea 是唯一滚动源 → 同步高亮层 scrollTop/Left + gutter 位移。
+      const syncScroll = React.useCallback(() => {
+        const ta = taRef.current;
+        const hl = hlRef.current;
+        const gi = gutterInnerRef.current;
+        if (!ta) return;
+        if (hl) { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; }
+        if (gi) gi.style.transform = "translateY(" + (-ta.scrollTop) + "px)";
+        scrollTopRef.current = ta.scrollTop;
+        placeTip();
+        // 滚动隐藏 tooltip 时同步清零命中缓存，否则鼠标在同一行内微动
+        // 不会重新触发（line === hoverLineRef.current 提前返回）。
+        hoverLineRef.current = 0;
+        if (props.onLineLeave) props.onLineLeave();
+      }, [props.onLineLeave, placeTip]);
+
+      React.useLayoutEffect(() => {
+        const ta = taRef.current;
+        const hl = hlRef.current;
+        const gi = gutterInnerRef.current;
+        if (!ta) return;
+        if (hl) { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; }
+        if (gi) gi.style.transform = "translateY(" + (-ta.scrollTop) + "px)";
+        scrollTopRef.current = ta.scrollTop;
+        placeTip();
+      }, [content, placeTip]);
+
+      // ---- 编辑：Tab / Enter auto-indent / Ctrl+S ----
+      const insertAtCursor = React.useCallback((ta, text) => {
+        ta.focus();
+        let ok = false;
+        try {
+          // execCommand 保留原生 undo 栈。
+          ok = document.execCommand("insertText", false, text);
+        } catch (e) { ok = false; }
+        if (!ok) {
+          const start = ta.selectionStart;
+          const end = ta.selectionEnd;
+          const next = ta.value.slice(0, start) + text + ta.value.slice(end);
+          ta.setRangeText(text, start, end, "end");
+          if (props.onChange) props.onChange(next);
+        }
+      }, [props.onChange]);
+
+      const onKeyDown = React.useCallback((e) => {
+        if (!editable) return;
+        const ta = e.currentTarget;
+        if (e.key === "Escape") {
+          // 键盘逃生舱：Tab 被编辑器占用，Esc 释放焦点。
+          ta.blur();
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          insertAtCursor(ta, "  ");
+          return;
+        }
+        if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          // auto-indent：复制当前行前导空白。
+          const pos = ta.selectionStart;
+          const before = ta.value.slice(0, pos);
+          const lineStart = before.lastIndexOf("\n") + 1;
+          const indent = (before.slice(lineStart).match(/^[ \t]*/) || [""])[0];
+          e.preventDefault();
+          insertAtCursor(ta, "\n" + indent);
+        }
+      }, [editable, insertAtCursor]);
+
+      // Ctrl/Cmd+S 挂在 .ark-root 上：焦点在 Tab 内任意位置（含保存/刷新
+      // 按钮）都生效，不会漏到浏览器触发「保存网页」。仅可编辑时触发写入——
+      // 只读/截断文件的 draft 不是完整文件，写回会毁掉原文件。
+      const onRootKeyDown = React.useCallback((e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+          e.preventDefault();
+          if (editable && props.onSave) props.onSave();
+        }
+      }, [editable, props.onSave]);
+
+      // IME：composition 期间强制文字可见（否则中文输入完全看不见）。
+      const onCompositionStart = React.useCallback((e) => {
+        composingRef.current = true;
+        const ta = e.currentTarget;
+        if (ta) ta.style.webkitTextFillColor = "var(--dsw-alias-label-primary)";
+      }, []);
+      const onCompositionEnd = React.useCallback((e) => {
+        composingRef.current = false;
+        const ta = e.currentTarget;
+        if (ta) ta.style.webkitTextFillColor = "transparent";
+        // React 的 onChange 在 composition 期间可能不触发 → 结束时补一次。
+        if (props.onChange && ta) props.onChange(ta.value);
+      }, [props.onChange]);
+
+      // ---- 悬停 blame：codearea 的 mousemove 命中检测 ----
+      // textarea 盖住代码区，行 div 收不到 mouseenter → 用实测行高前缀和 +
+      // offsetY 定位逻辑行（禁止 行号×固定行高 估算）。
+      const hoverLineRef = React.useRef(0);
+
+      const clearHover = React.useCallback(() => {
+        hoverLineRef.current = 0;
+        if (props.onLineLeave) props.onLineLeave();
+      }, [props.onLineLeave]);
+
+      const lineAtOffset = React.useCallback((offsetY) => {
+        const heights = lineHeightsRef.current;
+        if (!heights.length) return 0;
+        let acc = 0;
+        for (let i = 0; i < heights.length; i++) {
+          const h = heights[i];
+          if (offsetY < acc + h) return i + 1;
+          acc += h;
+        }
+        return 0;
+      }, []);
+
+      const onCodeMove = React.useCallback((e) => {
+        const hl = hlRef.current;
+        if (!hl) return;
+        const hlRect = hl.getBoundingClientRect();
+        // 高亮层自身被滚动了 → 命中判定要加回 scrollTop；再减去 padding-top，
+        // 行块从 padding 之后才开始（否则行边界处命中区整体偏移 8px）。
+        const offsetY = e.clientY - hlRect.top + scrollTopRef.current - ARK_EDITOR_PAD;
+        const line = lineAtOffset(offsetY);
+        if (line === hoverLineRef.current) return;
+        hoverLineRef.current = line;
+        if (props.onLineHover) props.onLineHover(line);
+      }, [lineAtOffset, props.onLineHover]);
+
+      // gutter 单元格同样可 hover（同一套命中判定）。
+      const onGutterMove = React.useCallback((e) => {
+        const gi = gutterInnerRef.current;
+        if (!gi) return;
+        const rect = gi.getBoundingClientRect();
+        // gutterInner 有 padding-top:8px（与代码区对齐），命中同样要减掉。
+        const offsetY = e.clientY - rect.top - ARK_EDITOR_PAD;
+        const line = lineAtOffset(offsetY);
+        if (line === hoverLineRef.current) return;
+        hoverLineRef.current = line;
+        if (props.onLineHover) props.onLineHover(line);
+      }, [lineAtOffset, props.onLineHover]);
+
+      // ---- 高亮层：每逻辑行一个 .ark-hl ----
+      // memo：hover/保存等 state 变化不重建 2000 个元素（content 变了才重建）。
+      const hlRows = React.useMemo(() => {
+        const rows = [];
+        for (let i = 0; i < view.length; i++) {
+          const tokens = view[i];
+          rows.push(
             React.createElement(
-              "span",
-              { className: "ark-code" },
+              "div",
+              { key: i, className: "ark-hl", "data-line": i + 1 },
               tokens.map((tk, j) =>
                 React.createElement("span", { key: j, className: "ark-" + tk.t }, tk.v),
               ),
             ),
-          ),
-        );
-      }
-      return React.createElement(
-        "div",
-        { className: "ark-root" },
-        React.createElement(
+          );
+        }
+        return rows;
+      }, [view]);
+
+      // ---- gutter 独立成列：每逻辑行一个 .ark-gcell（高度 = 实测行高）----
+      const gutterCells = React.useMemo(() => {
+        const cells = [];
+        for (let i = 0; i < view.length; i++) {
+          const lineNo = i + 1;
+          const kind = allAdd ? "add" : (kindMap.get(lineNo) || "");
+          const h = lineHeights[i];
+          cells.push(
+            React.createElement(
+              "div",
+              {
+                key: i,
+                className: "ark-gcell",
+                style: h ? { height: h + "px" } : null,
+              },
+              // 2px 竖条：无变更也渲染透明占位，避免行号横移
+              React.createElement("span", { className: "ark-gitbar" + (kind ? " ark-gitbar-" + kind : "") }),
+              React.createElement("span", { className: "ark-lineno" + (kind ? " ark-lineno-" + kind : "") }, String(lineNo)),
+            ),
+          );
+        }
+        return cells;
+      }, [view, kindMap, allAdd, lineHeights]);
+
+      // ---- blame tooltip（absolute，定位在 codearea 内，随内容滚动）----
+      const tip = props.tooltip || null;
+      React.useLayoutEffect(() => {
+        const el = tipRef.current;
+        if (!el) { tipHeightRef.current = 0; return; }
+        tipHeightRef.current = el.offsetHeight || 0;
+        if (tip && tip.line > 0) {
+          const heights = lineHeightsRef.current;
+          let acc = 0;
+          for (let i = 0; i < tip.line - 1 && i < heights.length; i++) acc += heights[i];
+          tipAnchorRef.current = acc + ARK_EDITOR_PAD;
+          tipLineHeightRef.current = heights[tip.line - 1] || 20;
+        }
+        placeTip();
+      }, [tip, lineHeights, placeTip]);
+
+      const tipNode = tip
+        ? React.createElement(
           "div",
-          { className: "ark-meta" },
+          {
+            className: "ark-blameTip",
+            ref: tipRef,
+            style: { left: "16px", top: "0px" },  // top/transform 由 placeTip 命令式维护
+          },
+          React.createElement(
+            "div",
+            { className: "ark-blameTip-meta" },
+            (tip.entry.author || "未知作者") + " · " + relativeTime(tip.entry.date) + (props.dirty ? "（对应上次保存版本）" : ""),
+          ),
+          React.createElement("div", { className: "ark-blameTip-sum" }, tip.entry.summary || ""),
+        )
+        : null;
+
+      const metaChildren = [
+        React.createElement(
+          "span",
+          { key: "meta", className: "ark-metaMain" },
           props.path || "",
           " · ",
           String(allLines.length),
           " 行",
           props.bytes !== undefined ? " · " + String(props.bytes) + " 字节" : "",
-          truncated ? " · 已截断（前 " + maxLines + " 行）" : "",
+          props.readTruncated ? " · 读取已截断" : "",
+          truncated ? " · 已截断（前 " + ARK_MAX_RENDER_LINES + " 行）" : "",
         ),
-        React.createElement("div", { className: "harm-scroll" }, rows),
+      ];
+      const gitNodes = gitMetaNodes(gitInfo, props.gitLoading, props.onRefreshGit);
+      if (gitNodes.length) {
+        metaChildren.push(React.createElement(
+          "span",
+          { key: "git", className: "ark-gitMeta" },
+          gitNodes,
+        ));
+      }
+      if (props.saveError) {
+        metaChildren.push(React.createElement("span", { key: "saveerr", className: "ark-saveErr", title: props.saveErrorDetail || props.saveError }, "保存失败：" + props.saveError));
+      } else if (props.savedFlash) {
+        metaChildren.push(React.createElement("span", { key: "saved", className: "ark-saved" }, "已保存"));
+      }
+      if (props.dirty) {
+        metaChildren.push(React.createElement("span", { key: "dirty", className: "ark-dirty" }, "● 未保存"));
+      }
+      if (editable) {
+        metaChildren.push(React.createElement(
+          "button",
+          {
+            key: "save",
+            className: "ark-saveBtn",
+            type: "button",
+            disabled: !props.dirty || props.saving,
+            title: "保存（Ctrl+S）",
+            onMouseDown: (e) => e.preventDefault(),
+            onClick: () => { if (props.onSave) props.onSave(); },
+          },
+          props.saving ? "保存中…" : "保存",
+        ));
+      } else if (props.readonlyReason) {
+        metaChildren.push(React.createElement("span", { key: "ro", className: "ark-readonlyNote" }, props.readonlyReason));
+      }
+
+      return React.createElement(
+        "div",
+        { className: "ark-root", onKeyDown: onRootKeyDown },
+        React.createElement(
+          "div",
+          { className: "ark-meta" },
+          React.createElement("div", { className: "ark-metaRow" }, metaChildren),
+        ),
+        React.createElement(
+          "div",
+          { className: "ark-editor" },
+          // gutter 独立成列（行高实测同步）
+          React.createElement(
+            "div",
+            {
+              className: "ark-gutter",
+              onMouseMove: onGutterMove,
+              onMouseLeave: clearHover,
+            },
+            React.createElement(
+              "div",
+              { className: "ark-gutterInner", ref: gutterInnerRef },
+              gutterCells,
+            ),
+          ),
+          // 代码区：高亮层 + 透明 textarea
+          React.createElement(
+            "div",
+            {
+              className: "ark-codearea",
+              ref: codeareaRef,
+              onMouseMove: onCodeMove,
+              onMouseLeave: clearHover,
+            },
+            React.createElement(
+              "pre",
+              { className: "ark-highlight", ref: hlRef, "aria-hidden": "true" },
+              hlRows,
+            ),
+            React.createElement("textarea", {
+              className: "ark-input",
+              ref: taRef,
+              // 不受控（defaultValue）：受控 textarea 在 IME 组字期间会被 React
+              // 回写 value，中文输入会被打断/光标跳变。
+              defaultValue: taValue,
+              style: { paddingBottom: inputPadBottom + "px" },
+              readOnly: !editable,
+              spellCheck: false,
+              onChange: (e) => { if (props.onChange) props.onChange(e.target.value); },
+              onScroll: syncScroll,
+              onKeyDown: onKeyDown,
+              onCompositionStart: onCompositionStart,
+              onCompositionEnd: onCompositionEnd,
+              onBlur: clearHover,
+            }),
+            tipNode,
+          ),
+        ),
       );
     }
 
@@ -620,16 +1220,31 @@ window.__ModuleLoader__.load({
       const info = props.useTabInfo ? props.useTabInfo() : null;
       const address = info && info.tab && info.tab.navigation ? info.tab.navigation.address : "";
       const parsed = parseFileAddress(address);
-      const [state, setState] = React.useState({ loading: true, content: "", bytes: 0, error: "" });
+      const [state, setState] = React.useState({ loading: true, content: "", bytes: 0, error: "", loaded: false, loadedPath: "", truncated: false });
+      const [gitInfo, setGitInfo] = React.useState(null);
+      const [gitLoading, setGitLoading] = React.useState(false);
+      const [tooltip, setTooltip] = React.useState(null);
+      const [gitRefreshTick, setGitRefreshTick] = React.useState(0);
+      // ---- 编辑状态 ----
+      const [draft, setDraft] = React.useState("");
+      const [baseline, setBaseline] = React.useState("");
+      const [saving, setSaving] = React.useState(false);
+      const [saveError, setSaveError] = React.useState("");
+      const [saveErrorDetail, setSaveErrorDetail] = React.useState("");
+      const [savedFlash, setSavedFlash] = React.useState(false);
+      const hoverTimer = React.useRef(null);
+      const pendingLine = React.useRef(0);
       const sessionId = (parsed && parsed.scope === "session" ? parsed.sessionId : "") || props.sessionId || "";
       const pathKey = parsed ? parsed.scope + ":" + parsed.path : "";
+      // dirty = draft ≠ baseline
+      const dirty = draft !== baseline;
 
       React.useEffect(() => {
         let alive = true;
-        setState({ loading: true, content: "", bytes: 0, error: "" });
+        setState({ loading: true, content: "", bytes: 0, error: "", loaded: false, loadedPath: "", truncated: false });
         (async () => {
           if (!parsed || !parsed.path) {
-            if (alive) setState({ loading: false, content: "", bytes: 0, error: "无法解析文件地址：" + (address || "(空)") });
+            if (alive) setState({ loading: false, content: "", bytes: 0, error: "无法解析文件地址：" + (address || "(空)"), loaded: false, loadedPath: "", truncated: false });
             return;
           }
           const readOnce = () => readWorkspaceFileText(sessionId, parsed.path);
@@ -646,26 +1261,179 @@ window.__ModuleLoader__.load({
                 if (!alive) return;
               }
             }
-            if (alive) setState({ loading: false, content: out.content, bytes: out.bytes, error: "" });
+            if (alive) {
+              setState({ loading: false, content: out.content, bytes: out.bytes, error: "", loaded: true, loadedPath: pathKey, truncated: !!out.truncated });
+              setDraft(out.content);
+              setBaseline(out.content);
+            }
           } catch (e) {
             // Absolute-scope fallback: the Host's own readTextFile Remote.
             if (parsed.scope === "absolute" && remote) {
               try {
                 const r = unwrap(await remote.readTextFile({ path: parsed.path }));
                 if (r.ok && r.value) {
-                  if (alive) setState({ loading: false, content: r.value.content || "", bytes: r.value.bytes || 0, error: "" });
+                  if (alive) {
+                    setState({ loading: false, content: r.value.content || "", bytes: r.value.bytes || 0, error: "", loaded: true, loadedPath: pathKey, truncated: !!r.value.truncated });
+                    setDraft(r.value.content || "");
+                    setBaseline(r.value.content || "");
+                  }
                   return;
                 }
-                if (alive) setState({ loading: false, content: "", bytes: 0, error: (r.error && (r.error.message || r.error.code)) || "读取失败" });
+                if (alive) setState({ loading: false, content: "", bytes: 0, error: (r.error && (r.error.message || r.error.code)) || "读取失败", loaded: false, loadedPath: "", truncated: false });
                 return;
               } catch (e2) { /* fall through */ }
             }
             const msg = e instanceof Error ? e.message : String(e);
-            if (alive) setState({ loading: false, content: "", bytes: 0, error: /workspaceFiles-remote-unavailable/.test(msg) ? "文件服务（remote.workspaceFiles）未就绪，请稍后重开此标签页 —— " + msg : msg });
+            if (alive) setState({ loading: false, content: "", bytes: 0, error: /workspaceFiles-remote-unavailable/.test(msg) ? "文件服务（remote.workspaceFiles）未就绪，请稍后重开此标签页 —— " + msg : msg, loaded: false, loadedPath: "", truncated: false });
           }
         })();
         return () => { alive = false; };
       }, [pathKey, sessionId]);
+
+      // 换文件 → 清空上一份文件的 git 装饰（避免旧分支/旧变更行残留），
+      // 并丢弃该文件的 blame 记忆（外部改动过的文件不能显示过期作者）。
+      React.useEffect(() => {
+        setGitInfo(null);
+        setGitLoading(false);
+        setTooltip(null);
+        setSaveError("");
+        setSaveErrorDetail("");
+        setSavedFlash(false);
+        if (parsed && parsed.path) {
+          forgetBlameForPath(parsed.scope === "session" ? sessionId + ":" + parsed.path : parsed.path);
+        }
+      }, [pathKey]);
+
+      // ---- git 信息（内容加载成功后请求；失败静默降级，代码照常显示）----
+      React.useEffect(() => {
+        if (!parsed || !parsed.path || !state.loaded || state.loadedPath !== pathKey) return undefined;
+        let alive = true;
+        setGitLoading(true);
+        (async () => {
+          try {
+            if (!remote) { if (alive) { setGitInfo(null); setGitLoading(false); } return; }
+            const req = { path: parsed.path };
+            if (parsed.scope === "session" && sessionId) req.sessionId = sessionId;
+            const r = unwrap(await remote.fileGitInfo(req));
+            if (!alive) return;
+            setGitInfo(r.ok && r.value ? r.value : null);
+          } catch (e) {
+            if (alive) setGitInfo(null);
+          }
+          if (alive) setGitLoading(false);
+        })();
+        return () => { alive = false; };
+      }, [pathKey, sessionId, state.loaded, state.loadedPath, gitRefreshTick]);
+
+      // 刷新 git 信息：丢弃该 path 的 blame 记忆后重新请求。
+      const refreshGit = React.useCallback(() => {
+        if (!parsed || !parsed.path) return;
+        const cachePath = parsed.scope === "session"
+          ? sessionId + ":" + parsed.path
+          : parsed.path;
+        forgetBlameForPath(cachePath);
+        setGitRefreshTick((n) => n + 1);
+      }, [pathKey]);
+
+      // ---- 悬停 blame tooltip（250ms 延迟；取到 entry 且仍悬停同一行才显示）----
+      const gitInfoRef = React.useRef(null);
+      gitInfoRef.current = gitInfo;
+      const clearHover = React.useCallback(() => {
+        if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
+        pendingLine.current = 0;
+        setTooltip(null);
+      }, []);
+
+      const handleLineHover = React.useCallback((line) => {
+        if (!parsed || !parsed.path) return;
+        if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
+        pendingLine.current = line;
+        if (!line) return;
+        hoverTimer.current = setTimeout(async () => {
+          hoverTimer.current = null;
+          if (pendingLine.current !== line) return;
+          const gi = gitInfoRef.current;
+          // 未跟踪 / HEAD 未出生的文件没有 blame 答案，不发请求。
+          if (!gi || gi.available !== true) return;
+          if (gi.state === "untracked" || gi.allAdded === true) return;
+          // 缓存身份：会话作用域下带 sessionId（同名相对路径不跨会话串味）。
+          const cachePath = parsed.scope === "session"
+            ? sessionId + ":" + parsed.path
+            : parsed.path;
+          const entry = await loadBlameEntry(cachePath, parsed.path, line, parsed.scope === "session" ? sessionId : "");
+          if (!entry) return;
+          if (pendingLine.current !== line) return;
+          setTooltip({ entry: entry, line: line });
+        }, 250);
+      }, [pathKey]);
+
+      React.useEffect(() => {
+        return () => { if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; } };
+      }, []);
+
+      // ---- 保存 ----
+      const saveFile = React.useCallback(async () => {
+        if (!parsed || !parsed.path || saving) return;
+        if (!remote) { setSaveError("远程服务未就绪"); return; }
+        setSaving(true);
+        setSaveError("");
+        try {
+          const req = { path: parsed.path, content: draft };
+          if (parsed.scope === "session" && sessionId) req.sessionId = sessionId;
+          const r = unwrap(await remote.writeTextFile(req));
+          if (!r.ok) {
+            // 错误码 → 中文可操作文案（原始 message 放 title 供排查）。
+            const code = (r.error && r.error.code) || "";
+            const raw = (r.error && (r.error.message || r.error.code)) || "写入失败";
+            const msg = code === "not-found" ? "文件已被删除或移动，无法保存（只支持覆盖已存在文件）"
+              : code === "too-large" ? "内容超过 2 MB 上限，未写入"
+              : code === "invalid-request" ? "路径无法解析，未写入"
+              : code === "write-failed" ? "写入失败（检查文件是否只读/被占用）"
+              : raw;
+            setSaveError(msg);
+            setSaveErrorDetail(raw);
+            return;
+          }
+          // 保存成功 → baseline 更新（不再 dirty）+ 刷新 git + 清 blame 记忆。
+          setBaseline(draft);
+          if (r.value && typeof r.value.bytes === "number") {
+            const savedBytes = r.value.bytes;
+            setState((s) => ({ ...s, bytes: savedBytes }));
+          }
+          const cachePath = parsed.scope === "session"
+            ? sessionId + ":" + parsed.path
+            : parsed.path;
+          forgetBlameForPath(cachePath);
+          setGitRefreshTick((n) => n + 1);
+          setSavedFlash(true);
+          const t = setTimeout(() => setSavedFlash(false), 2000);
+          if (typeof t === "object" && t && typeof t.unref === "function") t.unref();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setSaveError("保存请求异常");
+          setSaveErrorDetail(msg);
+        } finally {
+          setSaving(false);
+        }
+      }, [pathKey, draft, saving]);
+
+      // ---- 可编辑性判定 ----
+      // 按「加载时」内容判定：完整加载（读取未被截断）且行数 ≤ 2000 才可编辑。
+      // 绝不按实时 draft 判定——否则用户把 1500 行编辑到 2001 行会瞬间变只读
+      // 且渲染截断吞掉刚敲的内容。编辑中越过上限不限制（保存只受 Host 2 MiB 约束）。
+      // 逻辑行数：末尾换行不额外算一行（"a\nb\n" 是 2 行不是 3 行）。
+      const loadedLines = state.content === ""
+        ? 0
+        : (state.content.split("\n").length - (state.content.endsWith("\n") ? 1 : 0));
+      const editable = state.loaded && state.loadedPath === pathKey && !state.truncated
+        && loadedLines <= ARK_MAX_EDITABLE_LINES;
+      const readonlyReason = !editable
+        ? (state.truncated
+          ? "文件过大（读取已截断），仅预览，不可编辑"
+          : loadedLines > ARK_MAX_EDITABLE_LINES
+            ? "文件超过 " + ARK_MAX_RENDER_LINES + " 行，仅预览前 " + ARK_MAX_RENDER_LINES + " 行，不可编辑"
+            : "只读预览")
+        : "";
 
       if (state.loading) {
         return React.createElement("div", { className: "harm-page harm-pane" },
@@ -673,12 +1441,28 @@ window.__ModuleLoader__.load({
       }
       if (state.error) {
         return React.createElement("div", { className: "harm-page harm-pane" },
-          React.createElement("div", { className: "harm-banner harm-banner-warn" }, "读取失败：" + state.error));
+          React.createElement("div", { className: "harm-banner harm-banner-err" }, "读取失败：" + state.error));
       }
       return React.createElement(ArktsCodeView, {
         path: parsed ? parsed.path : "",
-        content: state.content,
+        content: draft,
         bytes: state.bytes,
+        editable: editable,
+        readonlyReason: readonlyReason,
+        readTruncated: state.truncated,
+        dirty: dirty,
+        saving: saving,
+        saveError: saveError,
+        saveErrorDetail: saveErrorDetail,
+        savedFlash: savedFlash,
+        onChange: setDraft,
+        onSave: saveFile,
+        gitInfo: gitInfo,
+        gitLoading: gitLoading,
+        onRefreshGit: refreshGit,
+        onLineHover: handleLineHover,
+        onLineLeave: clearHover,
+        tooltip: tooltip,
       });
     }
 
