@@ -1036,33 +1036,46 @@ export function findDevEcoTreeRoot (message) {
   return null
 }
 
+/** DSH 的结构化输出要求无损 JSON 数字，明确不接受负零。设备声明里的
+ *  "-0.00vp" / "-0.00" 与 0 语义相同，在进入结构树返回值前统一归一。 */
+function normalizeNegativeZero (n) {
+  return Object.is(n, -0) ? 0 : n
+}
+
 /** `$rect` 归一化成 `{left,top,right,bottom,width,height}`；拿不到返回 null。真实形态（实测）：
  *  字符串 `"[0.00, 136.00],[1316.00,2734.00]"`、数组 `[l,t,r,b]`、对象 `{startX,startY,endX,endY}` 都支持。 */
 function rectToBounds (rect) {
   if (!rect) return null
   const fin = (arr) => Array.isArray(arr) && arr.length >= 4 && arr.every(Number.isFinite)
+  const makeBounds = (l, t, r, b, w = r - l, h = b - t) => {
+    if (!fin([l, t, r, b, w, h])) return null
+    return {
+      left: normalizeNegativeZero(l), top: normalizeNegativeZero(t),
+      right: normalizeNegativeZero(r), bottom: normalizeNegativeZero(b),
+      width: normalizeNegativeZero(w), height: normalizeNegativeZero(h),
+    }
+  }
   // 字符串 "[l,t],[r,b]"（应用侧 inspector 树的真实形态）
   if (typeof rect === 'string') {
     const m = rect.match(/\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]\s*,?\s*\[\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\]/)
     if (m) {
       const [l, t, r, b] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])]
-      if (fin([l, t, r, b])) return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t }
+      return makeBounds(l, t, r, b)
     }
     return null
   }
   if (Array.isArray(rect)) {
     const [l, t, r, b] = rect.map(Number)
-    if (fin([l, t, r, b])) return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t }
-    return null
+    return makeBounds(l, t, r, b)
   }
   if (typeof rect === 'object') {
     const l = Number(rect.startX ?? rect.left ?? rect.x)
     const t = Number(rect.startY ?? rect.top ?? rect.y)
     const r = Number(rect.endX ?? rect.right)
     const b = Number(rect.endY ?? rect.bottom)
-    if (fin([l, t, r, b])) return { left: l, top: t, right: r, bottom: b, width: r - l, height: b - t }
+    if (fin([l, t, r, b])) return makeBounds(l, t, r, b)
     const w = Number(rect.width), h = Number(rect.height)
-    if (fin([l, t, w, h])) return { left: l, top: t, right: l + w, bottom: t + h, width: w, height: h }
+    if (fin([l, t, w, h])) return makeBounds(l, t, l + w, t + h, w, h)
   }
   return null
 }
@@ -1076,10 +1089,12 @@ function rectToBounds (rect) {
 /** 声明值字符串 → 数字：剥掉 `vp`/`px`/`fp`/`%` 单位（真实数据全是 `"12.00vp"` 这类带单位字符串）。 */
 function toUnitNumber (v) {
   if (v === undefined || v === null || v === '') return undefined
-  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined
+  if (typeof v === 'number') return Number.isFinite(v) ? normalizeNegativeZero(v) : undefined
   if (typeof v !== 'string') return undefined
   const m = String(v).trim().match(/^(-?[\d.]+)\s*(vp|px|fp|%)?$/i)
-  return m ? Number(m[1]) : undefined
+  if (!m) return undefined
+  const n = Number(m[1])
+  return Number.isFinite(n) ? normalizeNegativeZero(n) : undefined
 }
 
 /**
@@ -1089,8 +1104,9 @@ function toUnitNumber (v) {
  */
 function toBoxSides (v) {
   if (v === undefined || v === null || v === '') return undefined
-  if (typeof v === 'number' && Number.isFinite(v)) {
-    return { top: v, right: v, bottom: v, left: v }
+  if (typeof v === 'number') {
+    const n = toUnitNumber(v)
+    if (n !== undefined) return { top: n, right: n, bottom: n, left: n }
   }
   if (typeof v === 'string') {
     const s = v.trim()

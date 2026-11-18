@@ -823,6 +823,38 @@ test('parseDevEcoTree parses real-device attribute shapes (vp units / JSON margi
   assert.equal(hidden[1].visible, false)
 })
 
+test('parseDevEcoTree normalizes negative zero for lossless JSON tool output', () => {
+  // DSH 的 output.schema 拒绝 -0（JSON.stringify 虽显示 0，但并非无损 JSON 数字）。
+  // 设备可能上报 "-0.00vp"，声明值和坐标都必须在解析入口归一为 +0。
+  const root = {
+    $type: 'Row', $ID: 'negative-zero',
+    $rect: '[-0.00, -0.00],[-0.00, -0.00]',
+    $attrs: {
+      padding: '-0.00vp',
+      margin: { top: '-0.00vp', right: -0, bottom: '-0.00px', left: '-0.00' },
+      borderWidth: '-0.00vp',
+      borderRadius: { topLeft: '-0.00vp', topRight: -0, bottomLeft: '-0.00px', bottomRight: '-0.00' },
+      opacity: '-0.00', zIndex: '-0.00',
+    },
+    $children: [],
+  }
+  const node = parseDevEcoTree(root)[0]
+  assert.deepEqual(node.bounds, { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 })
+  assert.deepEqual(node.padding, { top: 0, right: 0, bottom: 0, left: 0 })
+  assert.deepEqual(node.margin, { top: 0, right: 0, bottom: 0, left: 0 })
+  assert.equal(node.borderWidth, 0)
+  assert.equal(node.borderRadius, 0)
+  assert.equal(node.opacity, 0)
+  assert.equal(node.zIndex, 0)
+
+  const assertNoNegativeZero = (value) => {
+    if (typeof value === 'number') assert.equal(Object.is(value, -0), false)
+    else if (value && typeof value === 'object') for (const entry of Object.values(value)) assertNoNegativeZero(entry)
+  }
+  assertNoNegativeZero(node)
+  assertNoNegativeZero(devEcoToolNodes([node], 400).nodes[0])
+})
+
 test('parseDevEcoTree keeps invisible nodes as stubs, prunes their subtrees', () => {
   const text = (id, top, attrs = {}, kids = []) =>
     ({ $type: 'Text', $ID: id, $rect: `[0,${top}][50,${top + 20}]`, $attrs: attrs, $children: kids })

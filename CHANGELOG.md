@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-18
+
+### Fixed
+
+- 修复 DevEco 结构树遇到 `-0.00vp` 等负零数据时 `harmony_ui_tree` 整体返回失败：DSH 的结构化输出要求无损 JSON 数字并拒绝 `-0`，而旧解析器会保留 `Number("-0.00vp")` 产生的负零。现在解析入口统一将负零归一为 `0`，覆盖带单位声明值、padding / margin / border / opacity / zIndex 以及矩形坐标和宽高。
+
+### Validation
+
+- 185 项单元测试通过（`npm run check` + `npm test`）；新增负零回归用例，并使用真实 DSH JSON Schema 校验器确认修复后的结构树数值通过校验。
+
 ## [0.9.0] - 2026-11-18
 
 ### Added
