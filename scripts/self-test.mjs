@@ -14,6 +14,7 @@ import {
   buildArkForwardArgs, buildLocalAbstractForwardArgs, buildForwardRemoveArgs, DEV_ECO_WS_MESSAGES, findDevEcoTreeRoot, parseDevEcoTree,
   buildDevEcoWsHandshake, isWsHandshakeAccepted, encodeWsClientTextFrame, encodeWsPongFrame, decodeWsServerFrames,
   devEcoNodeSummary, devEcoTreeLines, devEcoToolNodes,
+  findDevEcoNodeById, devEcoSubtreeNodes, devEcoAncestorChain,
   buildUiRawDumpArgs, buildUiRawRecvArgs, buildUiRawCleanArgs,
   buildHdcConnectArgs, buildHdcDisconnectArgs, parseTconnResult, parseProcessPids, resolveHdc,
   buildHdcListTargetsArgs, parseHdcTargets, buildHdcHilogArgs, buildHdcHilogFollowArgs,
@@ -36,6 +37,7 @@ import {
   decideDebugNoticeDelivery
 } from '../harmony-debugger.mjs'
 import { installPauseNotifier, buildHarmonyAgentTools } from '../harmony-agent-tools.mjs'
+import { buildHarmonyUiTreeTool, buildHarmonyUiNodeTool } from '../harmony-ui-tools.mjs'
 import {
   parseWebDebugSockets, buildWebForwardArgs, buildWebForwardRemoveArgs, buildWebSocketUrl,
   parseDevToolsTargets, selectWebTarget, normalizeWebDom, webDomTreeLines,
@@ -1056,7 +1058,199 @@ test('devEcoTreeLines renders one indented line per node', () => {
   const lines = devEcoTreeLines(nodes)
   assert.equal(lines.length, 2)
   assert.equal(lines[0], 'EntryView [组件] (0,0,100,100)')
-  assert.equal(lines[1], '  Text (5,5,50,30) "你好" id=title pad:1 2 3 4')
+  assert.equal(lines[1], '  Text (5,5,50,30) "你好" id=title padding:1 2 3 4')
+})
+
+test('devEcoTreeLines spells box-model fields out in full and projects backgroundColor', () => {
+  // 用户诉求：投影字段的缩写会引起误会（`bc:` 看着像 background color，
+  // 其实是 borderColor），所以一律用全名，并补上 backgroundColor。
+  const nodes = [
+    {
+      depth: 0, name: 'Column', kind: 'build-in', className: 'Column',
+      bounds: { left: 0, top: 0, right: 10, bottom: 10 },
+      padding: { top: 1, right: 2, bottom: 3, left: 4 },
+      margin: { top: 0, right: 0, bottom: 0, left: 0 },
+      borderWidth: 2, borderRadius: 8, borderColor: '#FF0000', backgroundColor: '#00FF00',
+    },
+  ]
+  const lines = devEcoTreeLines(nodes)
+  assert.equal(lines.length, 1)
+  assert.equal(
+    lines[0],
+    'Column (0,0,10,10) padding:1 2 3 4 margin:0 0 0 0 borderWidth:2 borderRadius:8 borderColor:#FF0000 backgroundColor:#00FF00',
+  )
+  // 旧缩写形式一个都不许残留
+  assert.equal(/pad:|bw:|br:|bc:/.test(lines[0]), false)
+  // backgroundColor 放在 borderColor 之后、children hidden 之前
+  assert.ok(lines[0].indexOf('borderColor:#FF0000') < lines[0].indexOf('backgroundColor:#00FF00'))
+  // 省略标记仍在最后
+  const omitted = devEcoTreeLines([
+    {
+      depth: 0, name: 'Column', kind: 'build-in', className: 'Column',
+      bounds: { left: 0, top: 0, right: 10, bottom: 10 },
+      backgroundColor: '#0000FF', childrenOmitted: true, hiddenDirect: 3,
+    },
+  ])
+  assert.equal(omitted[0], 'Column (0,0,10,10) backgroundColor:#0000FF +3 children hidden')
+  // 没有 backgroundColor 就不挂这一段
+  const plain = devEcoTreeLines([
+    { depth: 0, name: 'Column', kind: 'build-in', className: 'Column', bounds: { left: 0, top: 0, right: 10, bottom: 10 } },
+  ])
+  assert.equal(plain[0], 'Column (0,0,10,10)')
+  assert.equal(plain[0].includes('backgroundColor'), false)
+})
+
+test('devEcoNodeSummary attaches backgroundColor only when the device declared one', () => {
+  const base = { index: 0, depth: 0, parentIndex: -1, componentName: 'Panel', className: 'Panel' }
+  const withBg = devEcoNodeSummary(Object.assign({}, base, { backgroundColor: '#112233' }))
+  assert.equal(withBg.backgroundColor, '#112233')
+  const emptyBg = devEcoNodeSummary(Object.assign({}, base, { backgroundColor: '' }))
+  assert.equal('backgroundColor' in emptyBg, false)
+  const noBg = devEcoNodeSummary(base)
+  assert.equal('backgroundColor' in noBg, false)
+  // attrs 行为不变
+  assert.equal('attrs' in withBg, false)
+})
+
+// ---- 按 id 定位节点 / 取子树 / 取祖先链 --------------------------------------
+
+/** 造一棵小树：root(0) → dup(1) → leaf(2)；以及 root 的另一个子节点 dup(3)。 */
+const mkDevEcoIdTree = () => parseDevEcoTree({
+  $type: 'JsView', $ID: '10', viewTag: 'PageRoot', type: 'custom',
+  $rect: '[0.00,0.00],[100.00,100.00]',
+  $attrs: { id: 'pageRoot' },
+  $children: [{
+    $type: 'Column', $ID: '11', type: 'build-in',
+    $rect: '[0.00,0.00],[100.00,100.00]',
+    $attrs: { id: 'dup' },
+    $children: [{
+      $type: 'Text', $ID: '12', type: 'build-in',
+      $rect: '[1.00,1.00],[20.00,10.00]',
+      $attrs: { id: 'leaf' },
+      $children: [],
+    }],
+  }, {
+    $type: 'Text', $ID: '13', type: 'build-in', viewTag: 'Label',
+    $rect: '[1.00,2.00],[20.00,10.00]',
+    $attrs: { id: 'dup' },
+    $children: [],
+  }],
+})
+
+test('findDevEcoNodeById resolves ids by accessibilityId → devId → componentName', () => {
+  const nodes = mkDevEcoIdTree()
+  assert.equal(nodes.length, 4)
+  // 1) accessibilityId 命中（设备分配，全树唯一）
+  const byAcc = findDevEcoNodeById(nodes, '12')
+  assert.equal(byAcc.ok, true)
+  assert.equal(byAcc.matchedBy, 'accessibilityId')
+  assert.equal(byAcc.id, '12')
+  assert.equal(byAcc.node.index, 2)
+  // `#` 前缀形式等价
+  const byHash = findDevEcoNodeById(nodes, '#12')
+  assert.equal(byHash.ok, true)
+  assert.equal(byHash.matchedBy, 'accessibilityId')
+  assert.equal(byHash.id, '12')
+  assert.equal(byHash.node.index, 2)
+  // 数字 id 与字符串等价
+  assert.equal(findDevEcoNodeById(nodes, 12).node.index, 2)
+  // 2) devId 命中（开发者 .id()，可能重复）
+  const byDev = findDevEcoNodeById(nodes, 'leaf')
+  assert.equal(byDev.ok, true)
+  assert.equal(byDev.matchedBy, 'devId')
+  assert.equal(byDev.node.index, 2)
+  // 3) componentName 命中（组件/Builder 名，可能重复）
+  const byName = findDevEcoNodeById(nodes, 'PageRoot')
+  assert.equal(byName.ok, true)
+  assert.equal(byName.matchedBy, 'componentName')
+  assert.equal(byName.node.index, 0)
+  const byLabel = findDevEcoNodeById(nodes, 'Label')
+  assert.equal(byLabel.ok, true)
+  assert.equal(byLabel.matchedBy, 'componentName')
+  assert.equal(byLabel.node.index, 3)
+  // 4) 找不到
+  const miss = findDevEcoNodeById(nodes, 'nope')
+  assert.equal(miss.ok, false)
+  assert.equal(miss.reason, 'not-found')
+  assert.deepEqual(miss.candidates, [])
+  // 空 / 空白 id
+  for (const empty of ['', '   ', null, undefined]) {
+    const r = findDevEcoNodeById(nodes, empty)
+    assert.equal(r.ok, false)
+    assert.equal(r.reason, 'not-found')
+    assert.deepEqual(r.candidates, [])
+  }
+  // 5) 同 devId 两个节点 → ambiguous（不静默误命中）
+  const amb = findDevEcoNodeById(nodes, 'dup')
+  assert.equal(amb.ok, false)
+  assert.equal(amb.reason, 'ambiguous')
+  assert.equal(amb.matchedBy, 'devId')
+  assert.equal(amb.candidates.length, 2)
+  assert.deepEqual(amb.candidates.map((c) => c.index), [1, 3])
+  assert.deepEqual(amb.candidates.map((c) => c.accessibilityId), ['11', '13'])
+  // 永远不抛异常
+  assert.doesNotThrow(() => findDevEcoNodeById(null, 'x'))
+  assert.equal(findDevEcoNodeById(null, 'x').ok, false)
+})
+
+test('devEcoSubtreeNodes returns the contiguous DFS interval and renumbers it', () => {
+  const nodes = mkDevEcoIdTree()
+  // 子树 = 节点 1 起的连续 DFS 区间（节点 3 是它的兄弟，不属于子树）
+  const sub = devEcoSubtreeNodes(nodes, nodes[1])
+  assert.equal(sub.length, 2)
+  assert.deepEqual(sub.map((n) => n.index), [0, 1])            // 重新连续编号
+  assert.deepEqual(sub.map((n) => n.depth), [0, 1])            // 以子树根为 0
+  assert.equal(sub[0].parentIndex, -1)                        // 根没有父
+  assert.equal(sub[1].parentIndex, 0)                         // 父重映射到新下标
+  // 无关的兄弟节点不在结果里
+  assert.equal(sub.some((n) => n.accessibilityId === '13'), false)
+  // 其它字段原样保留（childCount 是整树口径，不因裁剪归零）
+  assert.equal(sub[0].childCount, 1)
+  assert.equal(sub[1].childCount, 0)
+  assert.equal(sub[0].className, 'Column')
+  assert.equal(sub[0].devId, 'dup')
+  // 浅拷贝：不得改到原数组
+  assert.notEqual(sub[0], nodes[1])
+  assert.equal(nodes[1].index, 1)
+  assert.equal(nodes[1].parentIndex, 0)
+  // 叶子子树只有一个节点
+  const leafSub = devEcoSubtreeNodes(nodes, nodes[2])
+  assert.equal(leafSub.length, 1)
+  assert.equal(leafSub[0].index, 0)
+  assert.equal(leafSub[0].depth, 0)
+  assert.equal(leafSub[0].parentIndex, -1)
+  // 节点不在 nodes 里 → []
+  assert.deepEqual(devEcoSubtreeNodes(nodes, { index: 99, depth: 0 }), [])
+  assert.deepEqual(devEcoSubtreeNodes(nodes, null), [])
+  assert.deepEqual(devEcoSubtreeNodes(null, nodes[0]), [])
+  // 负零归一：任何数值字段都不许出现 -0
+  const neg = [{ index: 0, depth: 0, parentIndex: -1, name: 'A', className: 'A',
+    bounds: { left: -0, top: 0, right: 0, bottom: 0, width: 0, height: 0 },
+    padding: { top: -0, right: 0, bottom: 0, left: 0 } }]
+  const negSub = devEcoSubtreeNodes(neg, neg[0])
+  assert.equal(Object.is(negSub[0].bounds.left, -0), false)
+  assert.equal(Object.is(negSub[0].padding.top, -0), false)
+  assert.equal(Object.is(negSub[0].depth, -0), false)
+})
+
+test('devEcoAncestorChain returns root→parent and excludes the node itself', () => {
+  const nodes = mkDevEcoIdTree()
+  // 节点 2 的祖先：root(0) → dup(1)
+  const chain = devEcoAncestorChain(nodes, nodes[2])
+  assert.equal(chain.length, 2)
+  assert.deepEqual(chain.map((c) => c.index), [0, 1])           // 由根到父
+  assert.equal(chain[0].name, 'PageRoot')
+  assert.equal(chain[0].accessibilityId, '10')
+  assert.equal(chain[1].name, 'dup')                            // componentName || devId || className
+  assert.equal(chain[1].className, 'Column')
+  assert.equal(chain[1].devId, 'dup')
+  assert.equal(chain.some((c) => c.index === 2), false)         // 不含自身
+  // 根节点 → 空数组
+  assert.deepEqual(devEcoAncestorChain(nodes, nodes[0]), [])
+  // 不在树里 / 空输入
+  assert.deepEqual(devEcoAncestorChain(nodes, { index: 99 }), [])
+  assert.deepEqual(devEcoAncestorChain(nodes, null), [])
+  assert.deepEqual(devEcoAncestorChain(null, nodes[0]), [])
 })
 
 test('devEcoTreeLines marks parents with omitted children', () => {
@@ -3541,3 +3735,319 @@ test('TYPERT manifest exposes writeTextFile and the invocation count is 27', asy
   assert.equal(invocation.result.schema.safeParse({ ok: true, value: { path: '/tmp/a.ets', bytes: 12 } }).success, false)
   assertJsonSafe(value.value, 'writeTextFile.value')
 })
+
+// ---- ArkUI 调试源 agent 工具（harmony_ui_tree / harmony_ui_node）----------------
+//
+// 工具的 output.schema 是 DSH 的**严格** schema：additionalProperties:false ——
+// 返回值里出现任何未声明的键，运行时直接判 INVALID_TOOL_OUTPUT。工具定义因此
+// 必须住在零依赖模块 harmony-ui-tools.mjs 里（index.js 里的定义 self-test 一行
+// 都覆盖不到），才可能在这里逐键比对。
+
+/**
+ * 工具输出 schema 的**严格**校验器（自带，不依赖 DSH 包）。
+ *
+ * 工具的 `output.schema` 是 value-spec 形态：`properties` 里每个属性用
+ * `required: true` 标记必填；`additionalProperties: false` 表示返回值不允许出现
+ * 未声明的键。递归进入 type 为 object 且带 properties 的属性（node / bounds /
+ * padding 等）继续比对；type 为 json 的属性只要求 JSON-safe（无 undefined /
+ * 函数 / NaN / Infinity）。
+ *
+ * @param {object} schema 工具的 output.schema（value-spec 形态）
+ * @param {*} value 工具 execute() 的返回值
+ * @param {string} label 报错时用的路径前缀
+ */
+const assertToolOutputMatchesSchema = (schema, value, label) => {
+  const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+  const assertJsonSafe = (v, path) => {
+    if (v === undefined) assert.fail(`${path}: undefined 不是 JSON 值`)
+    if (typeof v === 'function' || typeof v === 'symbol') assert.fail(`${path}: ${typeof v} 不是 JSON 值`)
+    if (typeof v === 'number' && !Number.isFinite(v)) assert.fail(`${path}: ${v} 不是无损 JSON 数`)
+    if (Array.isArray(v)) {
+      v.forEach((entry, i) => assertJsonSafe(entry, `${path}[${i}]`))
+      return
+    }
+    if (isPlainObject(v)) {
+      for (const [k, entry] of Object.entries(v)) assertJsonSafe(entry, `${path}.${k}`)
+    }
+  }
+  const check = (sch, val, path) => {
+    if (!sch || typeof sch !== 'object') return
+    if (Object.hasOwn(sch, 'const')) assert.deepEqual(val, sch.const, `${path}: const 不匹配`)
+    if (Array.isArray(sch.enum)) assert.ok(sch.enum.includes(val), `${path}: ${JSON.stringify(val)} 不在 enum 里`)
+    const type = sch.type
+    if (type === 'json') {
+      assertJsonSafe(val, path)
+      return
+    }
+    if (type === 'object') {
+      assert.ok(isPlainObject(val), `${path}: 期望 object`)
+      const props = sch.properties || {}
+      for (const key of Object.keys(val)) {
+        if (sch.additionalProperties === false) {
+          assert.ok(Object.hasOwn(props, key), `${path}: 出现未声明的键 "${key}"（additionalProperties: false）`)
+        }
+      }
+      for (const [key, child] of Object.entries(props)) {
+        const present = Object.hasOwn(val, key) && val[key] !== undefined
+        if (!present) {
+          if (child.required === true) assert.fail(`${path}.${key}: 缺少必填属性`)
+          continue
+        }
+        check(child, val[key], `${path}.${key}`)
+      }
+      return
+    }
+    if (type === 'array') {
+      assert.ok(Array.isArray(val), `${path}: 期望 array`)
+      if (sch.items) val.forEach((entry, i) => check(sch.items, entry, `${path}[${i}]`))
+      return
+    }
+    if (type === 'string') { assert.equal(typeof val, 'string', `${path}: 期望 string`); return }
+    if (type === 'boolean') { assert.equal(typeof val, 'boolean', `${path}: 期望 boolean`); return }
+    if (type === 'integer') {
+      assert.equal(typeof val, 'number', `${path}: 期望 number`)
+      assert.ok(Number.isInteger(val), `${path}: 期望 integer`)
+      return
+    }
+    if (type === 'number') {
+      assert.equal(typeof val, 'number', `${path}: 期望 number`)
+      assert.ok(Number.isFinite(val), `${path}: 期望有限数`)
+      return
+    }
+  }
+  check(schema, value, label)
+}
+
+/**
+ * 工具夹具：假 defineTool（不做参数校验，只透传 spec）+ 假 host（返回固定的
+ * 一棵 DevEco 树）。树形见 `mkDevEcoIdTree`：
+ *   10 PageRoot(custom) → 11 dup(Column) → 12 leaf(Text)；13 Label(Text)
+ * 其中 devId `dup` 命中两个节点（11 / 13）——用来触发 ambiguous 分支。
+ */
+const mkUiToolFixture = () => {
+  const nodes = mkDevEcoIdTree()
+  const host = {
+    fetchDevEcoTree: async () => ({
+      ok: true,
+      value: { nodes, source: 'deveco', pid: 1234, packageName: 'com.example.demo' },
+    }),
+  }
+  const defineTool = (spec) => spec
+  return {
+    nodes,
+    host,
+    tree: buildHarmonyUiTreeTool(defineTool, host),
+    node: buildHarmonyUiNodeTool(defineTool, host),
+  }
+}
+
+test('the strict tool-output validator rejects undeclared keys and missing required ones', () => {
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      a: { type: 'string', required: true },
+      b: { type: 'integer' },
+      c: { type: 'object', additionalProperties: false, properties: { d: { type: 'number', required: true } } },
+    },
+  }
+  assert.doesNotThrow(() => assertToolOutputMatchesSchema(schema, { a: 'x', b: 1, c: { d: 2 } }, 'ok'))
+  assert.throws(() => assertToolOutputMatchesSchema(schema, { a: 'x', zzz: 1 }, 'undeclared'))
+  assert.throws(() => assertToolOutputMatchesSchema(schema, { b: 1 }, 'missing required'))
+  assert.throws(() => assertToolOutputMatchesSchema(schema, { a: 'x', b: 'no' }, 'wrong type'))
+  assert.throws(() => assertToolOutputMatchesSchema(schema, { a: 'x', c: {} }, 'missing nested required'))
+  assert.throws(() => assertToolOutputMatchesSchema(schema, { a: 'x', c: { d: 1, e: 2 } }, 'undeclared nested'))
+})
+
+test('the ArkUI tool output schemas are strict and share one canonical node schema', () => {
+  const { tree, node } = mkUiToolFixture()
+  assert.equal(tree.output.schema.additionalProperties, false)
+  assert.equal(node.output.schema.additionalProperties, false)
+  // 两个工具共用同一份 canonical 节点 schema（不复制第二份）
+  assert.deepEqual(tree.output.schema.properties.nodes.items.properties, node.output.schema.properties.node.properties)
+  assert.equal(node.output.schema.properties.node.additionalProperties, false)
+  // childCount 是 canonical 节点的必填字段
+  assert.equal(node.output.schema.properties.node.properties.childCount.required, true)
+})
+
+test('harmony_ui_tree output matches its strict output schema (no root_id)', async () => {
+  const { tree } = mkUiToolFixture()
+  const value = await tree.execute({})
+  assertToolOutputMatchesSchema(tree.output.schema, value, 'harmony_ui_tree')
+  // 不传 root_id 时不出现 rootId / rootMatchedBy（既有行为不变）
+  assert.equal(Object.hasOwn(value, 'rootId'), false)
+  assert.equal(Object.hasOwn(value, 'rootMatchedBy'), false)
+  assert.equal(value.source, 'deveco')
+  assert.equal(value.pid, 1234)
+  assert.equal(value.packageName, 'com.example.demo')
+  assert.equal(value.nodeCount, 4)
+  assert.equal(value.truncated, false)
+  assert.equal(value.nodes.length, 4)
+  // 每个节点也逐个过校验器（递归进 nodeSchema）
+  value.nodes.forEach((n, i) => {
+    assertToolOutputMatchesSchema(tree.output.schema.properties.nodes.items, n, `harmony_ui_tree.nodes[${i}]`)
+  })
+  // render 不抛异常，文本里**不含** root= 标注
+  const text = tree.output.render({}, value)[0].text
+  assert.equal(text.includes('root='), false)
+  assert.ok(text.includes('PageRoot'))
+})
+
+test('harmony_ui_tree with include_attrs and max_nodes still matches the strict schema', async () => {
+  const { tree } = mkUiToolFixture()
+  const withAttrs = await tree.execute({ include_attrs: true })
+  assertToolOutputMatchesSchema(tree.output.schema, withAttrs, 'harmony_ui_tree(include_attrs)')
+  assert.equal(withAttrs.nodes[0].attrs.id, 'pageRoot')
+  // 整棵子树省略式截断：只发整节点，不发半棵
+  const truncated = await tree.execute({ max_nodes: 1 })
+  assertToolOutputMatchesSchema(tree.output.schema, truncated, 'harmony_ui_tree(max_nodes)')
+  assert.equal(truncated.truncated, true)
+  assert.equal(truncated.nodes.length, 1)
+  assert.equal(truncated.nodeCount, 4)
+  assert.equal(truncated.nodes[0].childrenOmitted, true)
+})
+
+test('harmony_ui_tree root_id returns only that subtree and reports the match', async () => {
+  const { tree } = mkUiToolFixture()
+  const value = await tree.execute({ root_id: '11' })
+  assertToolOutputMatchesSchema(tree.output.schema, value, 'harmony_ui_tree(root_id)')
+  assert.equal(value.rootId, '11')
+  assert.equal(value.rootMatchedBy, 'accessibilityId')
+  // 子树 = 节点 11 → 它的子节点 12（兄弟 13 不在内）
+  assert.equal(value.nodeCount, 2)
+  assert.deepEqual(value.nodes.map((n) => n.accessibilityId), ['11', '12'])
+  // 子树自洽：index 连续、depth 相对子树根、parentIndex 重映射
+  assert.deepEqual(value.nodes.map((n) => n.index), [0, 1])
+  assert.deepEqual(value.nodes.map((n) => n.depth), [0, 1])
+  assert.equal(value.nodes[0].parentIndex, -1)
+  assert.equal(value.nodes[1].parentIndex, 0)
+  // render 文本带 root= 标注
+  const text = tree.output.render({ root_id: '11' }, value)[0].text
+  assert.ok(text.includes('root=#11 (accessibilityId)'))
+})
+
+test('harmony_ui_tree root_id accepts the # prefixed accessibility id', async () => {
+  const { tree } = mkUiToolFixture()
+  const value = await tree.execute({ root_id: '#11' })
+  assertToolOutputMatchesSchema(tree.output.schema, value, 'harmony_ui_tree(root_id #)')
+  assert.equal(value.rootId, '11')
+  assert.equal(value.rootMatchedBy, 'accessibilityId')
+  assert.deepEqual(value.nodes.map((n) => n.accessibilityId), ['11', '12'])
+})
+
+test('harmony_ui_tree root_id rejects an ambiguous id and lists the candidates', async () => {
+  const { tree } = mkUiToolFixture()
+  await assert.rejects(() => tree.execute({ root_id: 'dup' }), (err) => {
+    assert.ok(err instanceof Error)
+    assert.ok(err.message.includes('命中多个节点'))
+    assert.ok(err.message.includes('#11 dup'))
+    assert.ok(err.message.includes('#13 Label'))
+    return true
+  })
+})
+
+test('harmony_ui_tree root_id reports the available ids when the node is missing', async () => {
+  const { tree } = mkUiToolFixture()
+  await assert.rejects(() => tree.execute({ root_id: 'nope' }), (err) => {
+    assert.ok(err.message.includes('找不到 id "nope"'))
+    assert.ok(err.message.includes('#10 PageRoot'))
+    assert.ok(err.message.includes('#12 leaf'))
+    assert.ok(err.message.includes('harmony_ui_tree'))
+    return true
+  })
+})
+
+test('harmony_ui_node returns one node with every raw attribute and its ancestor path', async () => {
+  const { node } = mkUiToolFixture()
+  const value = await node.execute({ id: '12' })
+  assertToolOutputMatchesSchema(node.output.schema, value, 'harmony_ui_node')
+  assert.equal(value.source, 'deveco')
+  assert.equal(value.pid, 1234)
+  assert.equal(value.packageName, 'com.example.demo')
+  assert.equal(value.matchedBy, 'accessibilityId')
+  assert.equal(typeof value.id, 'string')
+  assert.equal(value.id, '12')
+  // node 是 canonical 节点 + 设备全部原始属性（attrs）
+  assert.equal(value.node.accessibilityId, '12')
+  assert.equal(value.node.name, 'leaf')
+  assert.equal(value.node.className, 'Text')
+  assert.equal(value.node.kind, 'build-in')
+  assert.equal(typeof value.node.childCount, 'number')
+  assert.equal(value.node.childCount, 0)
+  assert.equal(value.node.attrs.id, 'leaf')
+  // path 是根→父的祖先链
+  assert.equal(value.path.length, 2)
+  assert.deepEqual(value.path.map((p) => p.accessibilityId), ['10', '11'])
+  assert.equal(value.path[0].name, 'PageRoot')
+  assert.equal(value.path[1].name, 'dup')
+  for (const step of value.path) {
+    assert.deepEqual(Object.keys(step).sort(), ['accessibilityId', 'className', 'devId', 'index', 'name'])
+  }
+  // 根节点没有祖先
+  const root = await node.execute({ id: '10' })
+  assert.deepEqual(root.path, [])
+  assert.equal(root.matchedBy, 'accessibilityId')
+  assert.equal(root.node.kind, 'custom')
+})
+
+test('harmony_ui_node reports an actionable error for an unknown id', async () => {
+  const { node } = mkUiToolFixture()
+  await assert.rejects(() => node.execute({ id: 'nope' }), (err) => {
+    assert.ok(err.message.includes('找不到 id "nope"'))
+    assert.ok(err.message.includes('#11 dup'))
+    assert.ok(err.message.includes('harmony_ui_node'))
+    return true
+  })
+})
+
+test('harmony_ui_node rejects an ambiguous id with the candidate list', async () => {
+  const { node } = mkUiToolFixture()
+  await assert.rejects(() => node.execute({ id: 'dup' }), (err) => {
+    assert.ok(err.message.includes('命中多个节点'))
+    assert.ok(err.message.includes('#11 dup'))
+    assert.ok(err.message.includes('#13 Label'))
+    return true
+  })
+})
+
+test('the ArkUI tools render text output without throwing', async () => {
+  const { tree, node } = mkUiToolFixture()
+  const treeValue = await tree.execute({})
+  const nodeValue = await node.execute({ id: '12' })
+  for (const [label, chunks] of [
+    ['harmony_ui_tree', tree.output.render({}, treeValue)],
+    ['harmony_ui_node', node.output.render({ id: '12' }, nodeValue)],
+  ]) {
+    assert.ok(Array.isArray(chunks), `${label}: render 必须返回数组`)
+    assert.equal(chunks.length, 1)
+    assert.equal(chunks[0].type, 'text')
+    assert.equal(typeof chunks[0].text, 'string')
+    assert.ok(chunks[0].text.length > 0)
+  }
+  // format=json 时输出的是合法 JSON
+  const jsonChunks = tree.output.render({ format: 'json' }, treeValue)
+  assert.equal(jsonChunks[0].type, 'text')
+  assert.equal(JSON.parse(jsonChunks[0].text).source, 'deveco')
+  // node 的 render 是紧凑文本：概要行 + 路径行 + 逐条原始属性
+  const text = node.output.render({ id: '12' }, nodeValue)[0].text
+  assert.ok(text.includes('路径：'))
+  assert.ok(text.includes('原始属性'))
+  assert.ok(text.includes('id=leaf'))
+})
+
+test('harmony_ui_node requires an id parameter and takes no tree-only parameters', () => {
+  const { tree, node } = mkUiToolFixture()
+  assert.equal(node.parameters.id.type, 'string')
+  assert.equal(node.parameters.id.required, true)
+  assert.equal(node.parameters.device.type, 'string')
+  assert.equal(node.parameters.pid.type, 'integer')
+  assert.equal(node.parameters.package_name.type, 'string')
+  // 不该有 format / include_attrs / max_nodes
+  assert.equal(Object.hasOwn(node.parameters, 'format'), false)
+  assert.equal(Object.hasOwn(node.parameters, 'include_attrs'), false)
+  assert.equal(Object.hasOwn(node.parameters, 'max_nodes'), false)
+  // tree 工具的 root_id 是可选参数
+  assert.equal(tree.parameters.root_id.type, 'string')
+  assert.equal(Object.hasOwn(tree.parameters.root_id, 'required'), false)
+})
+

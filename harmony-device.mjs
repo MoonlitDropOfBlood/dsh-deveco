@@ -1443,6 +1443,9 @@ export function devEcoNodeSummary (n, includeAttrs = false) {
   if (n.borderWidth !== undefined && n.borderWidth !== null) out.borderWidth = n.borderWidth
   if (n.borderRadius !== undefined && n.borderRadius !== null) out.borderRadius = n.borderRadius
   if (n.borderColor) out.borderColor = toStr(n.borderColor)
+  // 背景色也是声明值：与盒模型一样有值才挂 key（此前只在原始 attrs 里躺着，
+  // agent 看不到，就无法把「边框色」误读成「背景色」或反过来）。
+  if (n.backgroundColor) out.backgroundColor = toStr(n.backgroundColor)
   if (includeAttrs && n.rawAttrs && typeof n.rawAttrs === 'object') out.attrs = n.rawAttrs
   return out
 }
@@ -1460,11 +1463,14 @@ export function devEcoTreeLines (nodes) {
     parts.push(`(${b.left ?? 0},${b.top ?? 0},${b.right ?? 0},${b.bottom ?? 0})`)
     if (n.text) parts.push(JSON.stringify(n.text))
     if (n.devId && n.devId !== n.name) parts.push(`id=${n.devId}`)
-    if (n.padding) parts.push(`pad:${n.padding.top} ${n.padding.right} ${n.padding.bottom} ${n.padding.left}`)
+    if (n.padding) parts.push(`padding:${n.padding.top} ${n.padding.right} ${n.padding.bottom} ${n.padding.left}`)
     if (n.margin) parts.push(`margin:${n.margin.top} ${n.margin.right} ${n.margin.bottom} ${n.margin.left}`)
-    if (n.borderWidth !== undefined && n.borderWidth !== null) parts.push(`bw:${n.borderWidth}`)
-    if (n.borderRadius !== undefined && n.borderRadius !== null) parts.push(`br:${n.borderRadius}`)
-    if (n.borderColor) parts.push(`bc:${n.borderColor}`)
+    // 声明值用全名：缩写（pad/bw/br/bc）会被误读——尤其 `bc:` 看着像
+    // background color，实际是 borderColor。宁可多几个字符，也不要歧义。
+    if (n.borderWidth !== undefined && n.borderWidth !== null) parts.push(`borderWidth:${n.borderWidth}`)
+    if (n.borderRadius !== undefined && n.borderRadius !== null) parts.push(`borderRadius:${n.borderRadius}`)
+    if (n.borderColor) parts.push(`borderColor:${n.borderColor}`)
+    if (n.backgroundColor) parts.push(`backgroundColor:${n.backgroundColor}`)
     if (n.childrenOmitted) parts.push(`+${n.hiddenDirect ?? 0} children hidden`)
     out.push(parts.join(' '))
   }
@@ -1521,6 +1527,197 @@ export function devEcoToolNodes (nodes, cap = 400, includeAttrs = false) {
     keptStack.push(s)
   }
   return { nodes: items, nodeCount: list.length, truncated: items.length < list.length, hiddenNodes }
+}
+
+// ---- 按 id 定位节点 / 取子树 / 取祖先链（纯函数，供 root_id 与单节点工具用） ----
+
+/**
+ * 规范化查询 id：两侧都按字符串精确比较，所以数字与字符串等价；`#123` 与
+ * `123` 等价（UI 树里 accessibilityId 就是以 `#123` 展示的）。
+ */
+function normalizeDevEcoQueryId (id) {
+  const raw = id === undefined || id === null ? '' : String(id).trim()
+  return raw.startsWith('#') ? raw.slice(1).trim() : raw
+}
+
+/**
+ * 按 id 在扁平节点数组里定位一个节点：`accessibilityId` → `devId` →
+ * `componentName` 逐层精确匹配。
+ *
+ * 为什么要分层而不是一次全字段搜：accessibilityId 是设备分配的**全树唯一** id；
+ * devId（开发者 `.id()`）与 componentName（组件/Builder 名）都可能重复。一次
+ * 混合搜索会把「两个节点同名」变成静默误命中，agent 随后拿到的子树是错的。
+ * 同层命中多个时明确报 `ambiguous` 并列候选，让 agent 改用 accessibilityId。
+ *
+ * @param {Array<object>} nodes parseDevEcoTree 的扁平节点（DFS 序）
+ * @param {string|number} id 查询串（`#123` 与 `123` 等价）
+ * @returns {{ok:true, node:object, matchedBy:'accessibilityId'|'devId'|'componentName', id:string}
+ *   |{ok:false, reason:'not-found'|'ambiguous', matchedBy?:string, candidates:object[]}}
+ */
+export function findDevEcoNodeById (nodes, id) {
+  const list = Array.isArray(nodes) ? nodes : []
+  const key = normalizeDevEcoQueryId(id)
+  if (!key) return { ok: false, reason: 'not-found', candidates: [] }
+  const layers = [
+    ['accessibilityId', (n) => n.accessibilityId],
+    ['devId', (n) => n.devId],
+    ['componentName', (n) => n.componentName],
+  ]
+  for (const [matchedBy, pick] of layers) {
+    const hits = []
+    for (const n of list) {
+      if (!n || typeof n !== 'object') continue
+      const v = pick(n)
+      if (v === undefined || v === null) continue
+      if (String(v) !== key) continue
+      hits.push(n)
+    }
+    if (hits.length === 1) return { ok: true, node: hits[0], matchedBy, id: key }
+    if (hits.length > 1) {
+      return {
+        ok: false,
+        reason: 'ambiguous',
+        matchedBy,
+        candidates: hits.slice(0, 20).map((n) => ({
+          index: Number(n.index) || 0,
+          name: String(n.componentName || n.devId || n.className || ''),
+          className: String(n.className || ''),
+          accessibilityId: String(n.accessibilityId || ''),
+          devId: String(n.devId || ''),
+        })),
+      }
+    }
+  }
+  return { ok: false, reason: 'not-found', candidates: [] }
+}
+
+/**
+ * 在扁平节点数组里定位一个节点的位置：先按对象身份，再按 `index` 字段
+ * （调用方可能只拿到一个反序列化的副本，身份对不上）。
+ */
+function locateDevEcoNode (nodes, node) {
+  const list = Array.isArray(nodes) ? nodes : []
+  if (!node || typeof node !== 'object') return -1
+  for (let i = 0; i < list.length; i++) if (list[i] === node) return i
+  const wanted = Number(node.index)
+  if (Number.isFinite(wanted)) {
+    for (let i = 0; i < list.length; i++) {
+      if (list[i] && typeof list[i] === 'object' && Number(list[i].index) === wanted) return i
+    }
+  }
+  return -1
+}
+
+/**
+ * 浅拷贝一个节点并把数值字段里的负零归一（DSH 的结构化输出不接受 `-0`）。
+ * 除数值外所有字段（rawAttrs/attrs/可见性/声明值……）原样保留。
+ */
+function copyDevEcoNodeNormalized (node) {
+  const out = Object.assign({}, node)
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? normalizeNegativeZero(v) : v)
+  for (const key of ['index', 'depth', 'parentIndex', 'childCount', 'hiddenDirect', 'borderWidth', 'borderRadius', 'opacity', 'zIndex']) {
+    if (typeof out[key] === 'number') out[key] = num(out[key])
+  }
+  if (out.bounds && typeof out.bounds === 'object') {
+    const b = Object.assign({}, out.bounds)
+    for (const key of ['left', 'top', 'right', 'bottom', 'width', 'height']) {
+      if (typeof b[key] === 'number') b[key] = num(b[key])
+    }
+    out.bounds = b
+  }
+  for (const key of ['padding', 'margin']) {
+    const box = out[key]
+    if (box && typeof box === 'object') {
+      const b = Object.assign({}, box)
+      for (const side of ['top', 'right', 'bottom', 'left']) {
+        if (typeof b[side] === 'number') b[side] = num(b[side])
+      }
+      out[key] = b
+    }
+  }
+  return out
+}
+
+/**
+ * 取某个节点的**整棵子树**：从该节点起、到下一个 `depth <= 根.depth` 的节点
+ * 之前的连续 DFS 区间（扁平数组里 DFS 序天然保证子树是一段连续区间）。
+ *
+ * 为什么要重编号：子树要能独立当成一棵树交给 agent/前端渲染——原树的 index
+ * 有空洞、depth 带整树偏移、parentIndex 指向子树外的祖先。`index` 重新编成
+ * 0..n-1、`depth` 以子树根为 0、`parentIndex` 重映射（根为 -1），返回的节点
+ * 数组才是自洽的局部树。
+ *
+ * `childCount` / `childrenOmitted` / `hiddenDirect` / `rawAttrs` / `attrs` 等
+ * **原样保留**——`childCount` 是整树口径（子树根仍显示它在整树里的孩子数），
+ * 不能因为裁剪归零。
+ *
+ * @param {Array<object>} nodes parseDevEcoTree 的扁平节点（DFS 序）
+ * @param {object} node nodes 中的某个元素
+ * @returns {Array<object>} 子树节点（浅拷贝 + 重编号）；节点不在 nodes 里返回 []
+ */
+export function devEcoSubtreeNodes (nodes, node) {
+  const list = Array.isArray(nodes) ? nodes : []
+  const start = locateDevEcoNode(list, node)
+  if (start < 0) return []
+  const rootDepth = Math.max(0, Number(list[start].depth) || 0)
+  const picked = []
+  for (let i = start; i < list.length; i++) {
+    const n = list[i]
+    if (!n || typeof n !== 'object') continue
+    const depth = Math.max(0, Number(n.depth) || 0)
+    // 子树边界：下一个「深度不大于根」的节点就是根的兄弟（或叔伯）了。
+    if (i > start && depth <= rootDepth) break
+    picked.push(n)
+  }
+  const remap = new Map()
+  picked.forEach((n, i) => remap.set(Number(n.index), i))
+  return picked.map((n, i) => {
+    const copy = copyDevEcoNodeNormalized(n)
+    copy.index = i
+    copy.depth = normalizeNegativeZero(Math.max(0, Number(n.depth) || 0) - rootDepth)
+    const parent = Number(n.parentIndex)
+    copy.parentIndex = (Number.isFinite(parent) && parent >= 0 && remap.has(parent)) ? remap.get(parent) : -1
+    return copy
+  })
+}
+
+/**
+ * 取某个节点的祖先链（根 → 父，不含节点自身）。
+ *
+ * 用途：agent 拿到一个节点时需要知道它**在哪条路径上**（面包屑），否则无法
+ * 解释「这个 Text 属于哪个页面/哪个容器」。用 Set 防环——设备上报的树偶尔有
+ * 异常的 parentIndex，自引用会让遍历死循环。
+ *
+ * @param {Array<object>} nodes parseDevEcoTree 的扁平节点（DFS 序）
+ * @param {object} node nodes 中的某个元素
+ * @returns {Array<{index:number,name:string,className:string,accessibilityId:string,devId:string}>}
+ */
+export function devEcoAncestorChain (nodes, node) {
+  const list = Array.isArray(nodes) ? nodes : []
+  const at = locateDevEcoNode(list, node)
+  if (at < 0) return []
+  const byIndex = new Map()
+  for (const n of list) {
+    if (n && typeof n === 'object' && Number.isFinite(Number(n.index))) byIndex.set(Number(n.index), n)
+  }
+  const chain = []
+  const seen = new Set()
+  let parent = Number(list[at].parentIndex)
+  while (Number.isFinite(parent) && parent >= 0 && !seen.has(parent)) {
+    seen.add(parent)
+    const p = byIndex.get(parent)
+    if (!p) break
+    chain.push({
+      index: Number(p.index) || 0,
+      name: String(p.componentName || p.devId || p.className || ''),
+      className: String(p.className || ''),
+      accessibilityId: String(p.accessibilityId || ''),
+      devId: String(p.devId || ''),
+    })
+    parent = Number(p.parentIndex)
+  }
+  chain.reverse()
+  return chain
 }
 
 export function hitTest (nodes, x, y) {

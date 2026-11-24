@@ -32,8 +32,9 @@ dsh-deveco/
 ├── harmony-source-map.mjs    # 零依赖：Hvigor Source Map v3 VLQ 解码、源码断点定位与调用栈反解
 ├── harmony-git.mjs           # 零依赖：git 命令构造/执行（spawn argv，--literal-pathspecs + `--`）、status/diff/blame 解析、路径归一、保存内容 EOL/BOM 保留
 ├── harmony-agent-tools.mjs   # agent 工具定义（harmony_project / harmony_debug / harmony_web_dom），执行经 host 端口注入
+├── harmony-ui-tools.mjs      # 零依赖：agent 工具定义（harmony_ui_tree / harmony_ui_node），执行经 host.fetchDevEcoTree 端口注入；工具 spec 单独成模块以便 self-test 覆盖严格 output schema
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 185 个独立核心单元测试（含工程模型、Source Map、源码断点/通知、Web DOM/CDP 与 git/保存）
+├── scripts/self-test.mjs     # 203 个独立核心单元测试（含工程模型、Source Map、源码断点/通知、Web DOM/CDP、git/保存、ArkUI 树投影与两个 UI 工具的严格 schema 自校验）
 ├── scripts/e2e-agent-tools.mjs  # 模拟器跑 agent 工程/调试工具的端到端探针（不依赖 DSH）
 ├── scripts/e2e-source-map.mjs   # 真实 Hvigor 工程 Source Map 双向映射探针（不依赖设备/DSH）
 ├── scripts/e2e-breakpoint-notify.mjs  # 断点通知链路端到端探针（假 ArkVM 服务端，不依赖设备/DSH）
@@ -187,12 +188,23 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 
 **`harmony_ui_tree`** —— DevEco 调试源取树，注册进 DSH 的 `ctx.tools`（`@deepseek-ai/dsh-tools` 的 `defineTool`），agent 可直接调用：
 
-- **参数**：`device`（序列号，省略用默认目标）、`pid` / `package_name`（省略取前台窗口应用）、`format`（`tree` 缩进树文本＝默认 / `json` 完整节点 JSON）、`include_attrs`（附带全部原始属性，占篇幅，默认关）、`max_nodes`（默认 400、上限 4000）。截断**整棵子树省略，绝不发半棵**：被省略节点的最近保留祖先带 `childrenOmitted: true` + `hiddenDirect`（省略的直接子节点数），每个节点带 `childCount`（原始未裁剪树口径的直接子节点总数，Swiper/不可见/max_nodes 裁剪后均保持原值）——前端/agent 由此知道内部还有多少孩子；结构性裁剪也通过 `childrenOmitted`/`hiddenDirect` 标记，不得把被裁成叶子的节点误报成 `childCount:0`。
+- **参数**：`device`（序列号，省略用默认目标）、`pid` / `package_name`（省略取前台窗口应用）、`format`（`tree` 缩进树文本＝默认 / `json` 完整节点 JSON）、`include_attrs`（附带全部原始属性，占篇幅，默认关）、`max_nodes`（默认 400、上限 4000）、`root_id`（**只取子树**：以该节点为根返回局部组件树，id ＝ 设备 accessibilityId（UI 树里的 `#123`，`#` 可省）或开发者 `.id()`）。截断**整棵子树省略，绝不发半棵**：被省略节点的最近保留祖先带 `childrenOmitted: true` + `hiddenDirect`（省略的直接子节点数），每个节点带 `childCount`（原始未裁剪树口径的直接子节点总数，Swiper/不可见/max_nodes 裁剪后均保持原值）——前端/agent 由此知道内部还有多少孩子；结构性裁剪也通过 `childrenOmitted`/`hiddenDirect` 标记，不得把被裁成叶子的节点误报成 `childCount:0`。
+- **id 解析（`root_id` 与 `harmony_ui_node` 共用）**：`findDevEcoNodeById` 按 **`accessibilityId` → `devId` → `componentName`** 优先级精确匹配（`#` 前缀可省）；同一层命中多个 → `ambiguous`（返回候选清单让 agent 改用 accessibilityId），一个不中 → `not-found`（错误消息附当前树前几个可用 id）。**accessibilityId 是设备分配的全树唯一 id**，devId（开发者 `.id()`）可能重复，所以对外一律以 accessibilityId 为准。
+- **子树裁剪（`root_id`）**：`devEcoSubtreeNodes` 取命中节点起的**连续 DFS 区间**（到下一个 `depth <= 根.depth` 的节点为止），并重编号成自成一棵树：`index` 0..n-1 连续、`depth` 相对子树根、`parentIndex` 重映射（根为 -1）；`childCount` / `childrenOmitted` / `hiddenDirect` 原样保留（子树根的 `childCount` 仍是**整树口径**，不因裁剪归零）。
 - **Swiper 裁剪（Inspector 与 agent 共用 `parseDevEcoTree`）**：`displayCount` 未配置按 1；未配置或 ≤1 时，仅 `currentIndex` 对应的直接子页面完整保留，非当前页若是 `TabContent` 最多保留两层（页根 + 直接子节点），其他类型只保留页根一层；`displayCount>1` 完全不做这套 Swiper 裁剪。不可见存根规则与 `max_nodes` 截断仍照常生效。
 - **canonical 输出**（`output.schema` 严格校验）：`{ source:"deveco", pid, packageName, nodeCount, truncated, nodes[] }`，节点是 `devEcoNodeSummary` 的紧凑投影（展示名沿用 UI 标签规则：组件名→开发者 id→真实类型；声明值**有值才挂 key**）；`render` 把 nodes 投影成缩进树文本行（`devEcoTreeLines`），`format=json` 时输出完整 JSON。
 - **注册模式**（Host `[Service.init]`）：动态 `import("@deepseek-ai/dsh-tools")` → `this._ctx.inject(["tools"], ...)` → `tools.register(buildHarmonyUiTreeTool(...))`，注册器返回的 disposer 用 `this._ctx.effect(() => off)` 挂到插件生命周期。**全链路 try/catch 优雅降级**：dsh-tools / ctx.tools 任一不可用就静默跳过，Remote/UI 面不受影响。`peerDependencies` 加 `@deepseek-ai/dsh-tools`（双段范围，过兼容性 gate）。
+- **工具定义住 `harmony-ui-tools.mjs`（零依赖模块，可单测）**：两个 UI 工具的 spec（`nodeSchema` / `sidesSchema` / `boundsSchema` / `devEcoNodeLookupError` / 两个 builder）都在**零依赖模块** `harmony-ui-tools.mjs` 里，**不放在 `index.js`**——`index.js` 只提供 `host.fetchDevEcoTree` 端口（`index.js` 里 `_fetchDevEcoTree` 是 Host 编排）。**为什么要单独拆**：DSH 的 `output.schema` 是 `additionalProperties:false` 的**严格** schema（运行时未声明的键直接判 INVALID_TOOL_OUTPUT），工具定义一旦住在 `index.js` 里就**没法被 self-test 覆盖**——历史上 `-0` 负零就是这样悄悄炸掉整棵树的（见 CHANGELOG 0.9.1）。self-test 用自带的严格 schema 校验器逐键比对两个工具的返回值，定义搬进零依赖模块后才做得到。
 - **实现复用**：工具走 `service._fetchDevEcoTree()`（rich：nodes + source + pid + packageName）；Remote `uiDevEcoTree` 是它的薄包装（严格按 TYPERT 契约只回 `{nodes, source}`）。同一份取树链路两面共用。
 - **边界同 DevEco 调试源**：需 debug 应用 + IDE Inspector 面板未占用（单客户端）；失败时抛错（registry 转 isError 文本），错误信息含全部前置条件指引。`isConcurrencySafe: true`（只读无共享状态，可并行）。
+
+**`harmony_ui_node`** —— 按唯一 id 取**单个组件的全部属性**（省 token 的替代路径），与 `harmony_ui_tree` 同源同前置条件：
+
+- **参数**：`id`（**必填**，设备 accessibilityId 如 `123` / `#123`，或开发者 `.id()`）、可选 `device` / `pid` / `package_name`（与 `harmony_ui_tree` 同）。
+- **输出**：`{ source:"deveco", pid, packageName, matchedBy, id, node, path }`——`node` 是 canonical 节点**且带 `attrs`＝设备全部原始属性**（字号、字色、尺寸、状态等设备上报的一切），`path` 是根→父的祖先链（`{index,name,className,accessibilityId,devId}`），`matchedBy` 说明是按 `accessibilityId` / `devId` / `componentName` 哪一层命中的。
+- **为什么要它**：`harmony_ui_tree` 一次返回整棵树（几百节点）才能定位一个组件；本工具只回**那一个节点**的全量属性 ＋ 祖先路径，token 消耗与树规模无关。
+- **`childCount` 必须补**：`devEcoNodeSummary` 不产 `childCount`，而 canonical 节点 schema 要求它必填——工具层取 parse 节点的 `childCount` 补上（子树根的 `childCount` 是**整树口径**，不因取子树归零）。
+- **失败消息必须可操作**：`ambiguous`（同 id 多命中）→ 列候选（`#accessibilityId name`）；`not-found` → 列当前树前几个可用 id，并提示 id 来自 `harmony_ui_tree` / `harmony_ui_node`。
 
 ### 10. Agent 工程、调试与 Web DOM 工具面
 
@@ -299,7 +311,7 @@ Host 经 `buildHarmonyAgentTools` 注册 `harmony_project`、`harmony_debug` 与
 
 ```bash
 npm run check              # 全部 JS 语法检查（含工程模型/Source Map/git 模块/e2e 模块）
-npm test                   # 185 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP、git 解析与保存）
+npm test                   # 203 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP、git 解析与保存、ArkUI 树投影与 UI 工具严格 schema）
 node scripts/e2e-source-map.mjs --project <root> --source entry/src/main/ets/pages/Index.ets --line 296  # 真实 Hvigor Source Map 双向验证（不依赖设备/DSH）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --project <root> --source entry/src/main/ets/pages/Index.ets --source-line 296 --attach   # 模拟器跑工程 + 源码断点工具（不依赖 DSH）
 npm run e2e:notify             # 断点通知链路端到端（**不依赖设备**：假 ArkVM 服务端 + 真会话 + 真工具 + 真 Host 投递）

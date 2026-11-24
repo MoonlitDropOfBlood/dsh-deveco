@@ -76,8 +76,6 @@ import {
   encodeWsClientTextFrame,
   encodeWsPongFrame,
   decodeWsServerFrames,
-  devEcoTreeLines,
-  devEcoToolNodes,
   buildHdcConnectArgs,
   buildHdcDisconnectArgs,
   parseProcessPids,
@@ -90,6 +88,7 @@ import {
   readPngSize,
 } from "./harmony-device.mjs";
 import { buildHarmonyAgentTools } from "./harmony-agent-tools.mjs";
+import { buildHarmonyUiTreeTool, buildHarmonyUiNodeTool } from "./harmony-ui-tools.mjs";
 import { inspectHarmonyProject } from "./harmony-project.mjs";
 import {
   parseWebDebugSockets,
@@ -319,129 +318,6 @@ function devEcoWsRequestTree(port, timeoutMs = 12000) {
   })
 }
 
-/**
- * Agent 工具面：`harmony_ui_tree` —— DevEco 开发调试源取树，注册进 DSH 的
- * `ctx.tools`（`@deepseek-ai/dsh-tools` 的 `defineTool`），让对话里的 agent
- * 直接调用。canonical 输出是紧凑节点数组（`devEcoNodeSummary`），`render`
- * 投影为缩进树文本（或 json 格式时输出完整 JSON）。
- *
- * @param {Function} defineTool dsh-tools 的 defineTool（运行期动态导入）
- * @param {HarmonyDevEcoService} service Host 服务实例（复用 _fetchDevEcoTree）
- */
-function buildHarmonyUiTreeTool (defineTool, service) {
-  const sidesSchema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      top: { type: "number", required: true },
-      right: { type: "number", required: true },
-      bottom: { type: "number", required: true },
-      left: { type: "number", required: true },
-    },
-  };
-  const boundsSchema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      left: { type: "number", required: true },
-      top: { type: "number", required: true },
-      right: { type: "number", required: true },
-      bottom: { type: "number", required: true },
-      width: { type: "number", required: true },
-      height: { type: "number", required: true },
-    },
-  };
-  const nodeSchema = {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      index: { type: "integer", required: true },
-      depth: { type: "integer", required: true },
-      parentIndex: { type: "integer", required: true },
-      name: { type: "string", required: true, description: "展示名：组件名 → 开发者 .id() → 真实类型（沿用 UI 标签规则）" },
-      componentName: { type: "string", required: true },
-      className: { type: "string", required: true },
-      kind: { type: "string", enum: ["custom", "build-in"], required: true },
-      text: { type: "string", required: true },
-      devId: { type: "string", required: true },
-      accessibilityId: { type: "string", required: true },
-      bounds: { ...boundsSchema, required: true },
-      visible: { type: "boolean", required: true },
-      enabled: { type: "boolean", required: true },
-      clickable: { type: "boolean", required: true },
-      scrollable: { type: "boolean", required: true },
-      childCount: { type: "integer", required: true, description: "原始树中的直接子节点总数；Swiper/不可见/max_nodes 裁剪后仍保持原值" },
-      childrenOmitted: { type: "boolean", description: "true = 该节点的直接子节点因裁剪未返回" },
-      hiddenDirect: { type: "integer", description: "被省略的直接子节点数（childrenOmitted 时有值）" },
-      padding: sidesSchema,
-      margin: sidesSchema,
-      borderWidth: { type: "number" },
-      borderRadius: { type: "number" },
-      borderColor: { type: "string" },
-      attrs: { type: "json", description: "include_attrs 时附带的全部原始属性" },
-    },
-  };
-  return defineTool({
-    name: "harmony_ui_tree",
-    description: "Fetch the ArkUI component tree of a HarmonyOS app on a connected device/emulator through the DevEco development-debug channel — the same data DevEco Studio's ArkUI Inspector shows, including component/Builder names (viewTag) and declared padding/margin/border values (uitest dumps lack these). Invisible nodes (visible=false / Visibility.Hidden / Visibility.None) are kept as leaf stubs (visible=false) while their whole subtrees are pruned — e.g. a home page hidden behind a pushed NavDestination stays inspectable as one stub row. For Swiper with displayCount absent or <= 1, only the currentIndex page is returned in full; other pages keep only their root, plus one child level for TabContent. Requires a debuggable app; the app-side inspector socket is single-client, so close DevEco Studio's ArkUI Inspector panel first if it is open (the error message lists all prerequisites). By default targets the foreground window's app. Returns an indented tree of nodes with bounds, text and box-model declarations.",
-    parameters: {
-      device: { type: "string", description: "Device/emulator serial as listed by hdc targets (e.g. 127.0.0.1:5555). Omit for the default target." },
-      pid: { type: "integer", description: "Target app process id. Omit to use the foreground window's app." },
-      package_name: { type: "string", description: "Target app package name (e.g. com.example.app). Derived from /proc/<pid>/cmdline when omitted." },
-      format: { type: "string", enum: ["tree", "json"], default: "tree", description: "tree = compact indented text lines (default); json = the full node objects as JSON." },
-      include_attrs: { type: "boolean", description: "Include every node's full raw attribute map (very verbose; off by default)." },
-      max_nodes: { type: "integer", description: "Maximum number of nodes returned (default 400, capped at 4000). Truncation drops whole subtrees — the boundary parent is flagged with childrenOmitted/hiddenDirect so no half-subtree is ever returned." },
-    },
-    output: {
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          source: { type: "string", const: "deveco", required: true },
-          pid: { type: "integer", required: true },
-          packageName: { type: "string", required: true },
-          nodeCount: { type: "integer", required: true, description: "树中全部节点数（截断前）" },
-          truncated: { type: "boolean", required: true },
-          nodes: { type: "array", items: nodeSchema, required: true },
-        },
-      },
-      render (args, value) {
-        if (args && args.format === "json") {
-          return [{ type: "text", text: JSON.stringify(value, null, 1) }];
-        }
-        const head = `ArkUI 组件树（DevEco 调试源） pid=${value.pid} ${value.packageName} 共 ${value.nodeCount} 节点`
-          + (value.truncated ? `（已截断至 ${value.nodes.length}，加 max_nodes 看更多）` : "");
-        return [{ type: "text", text: [head, ...devEcoTreeLines(value.nodes)].join("\n") }];
-      },
-    },
-    async execute (args) {
-      const res = await service._fetchDevEcoTree({
-        device: args.device,
-        pid: args.pid,
-        packageName: args.package_name,
-      });
-      if (!res.ok) {
-        throw new Error((res.error && (res.error.message || res.error.code)) || "harmony_ui_tree failed");
-      }
-      const all = Array.isArray(res.value.nodes) ? res.value.nodes : [];
-      let cap = Number.isFinite(args.max_nodes) ? Math.floor(args.max_nodes) : 400;
-      cap = Math.max(1, Math.min(cap, 4000));
-      // 整棵子树省略式裁剪：绝不发半棵；childCount/childrenOmitted/hiddenDirect
-      // 告诉前端与 agent 被省略处内部还有多少直接子节点。
-      const trimmed = devEcoToolNodes(all, cap, args.include_attrs === true);
-      return {
-        source: "deveco",
-        pid: res.value.pid,
-        packageName: res.value.packageName,
-        nodeCount: trimmed.nodeCount,
-        truncated: trimmed.truncated,
-        nodes: trimmed.nodes,
-      };
-    },
-    isConcurrencySafe () { return true; },  // 只读、无共享状态，可并行
-  });
-}
-
 export class HarmonyDevEcoService extends TypertRemoteService {
   /**
    * No hard service dependencies — the entire toolchain layer is local modules.
@@ -520,7 +396,11 @@ export class HarmonyDevEcoService extends TypertRemoteService {
               void label;
             }
           };
-          register(buildHarmonyUiTreeTool(defineTool, this), "harmony_ui_tree");
+          // ArkUI 调试源工具（harmony_ui_tree / harmony_ui_node）：定义住在零依赖
+          // 模块 harmony-ui-tools.mjs（可被 self-test 覆盖），这里只提供取树端口。
+          const uiHost = { fetchDevEcoTree: (request) => this._fetchDevEcoTree(request) };
+          register(buildHarmonyUiTreeTool(defineTool, uiHost), "harmony_ui_tree");
+          register(buildHarmonyUiNodeTool(defineTool, uiHost), "harmony_ui_node");
           // 工程模型 + ArkTS 运行时调试器（harmony_project / harmony_debug）。
           // Host 提供当前进程 cwd 与设备传输；当前 agent 的 session.header.cwd
           // 在工具执行上下文中优先，保证 Web 多工作区下定位到正确工程。

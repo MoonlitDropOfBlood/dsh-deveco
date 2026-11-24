@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-24
+
+### Added
+
+- **新工具 `harmony_ui_node`** —— 按唯一 id 取**单个组件的全部属性**，作为 `harmony_ui_tree` 的省 token 替代路径：只需一个 id（设备 accessibilityId，形如 `#123`，`#` 可省；也接受开发者 `.id()` 值），返回该节点的 canonical 投影 **＋ 设备上报的全部原始属性**（`attrs`：字号、字色、尺寸、状态等一切设备属性）**＋ 根→父的祖先路径**（`path`），token 消耗与整棵树的规模无关——不必为了看清一个组件而拉回几百个节点。id 命中多个时列出候选（`#accessibilityId name`），命中不到时列出当前树可用 id 并说明 id 来源。
+- **`harmony_ui_tree` 新增 `root_id` 参数** —— 只取某个节点为根的**局部组件树**，不再返回整棵树；id 解析规则与 `harmony_ui_node` 共用（`accessibilityId` → `devId` → `componentName` 逐层精确匹配，同层多命中报 `ambiguous` 并列候选，绝不静默误命中）。子树会重编号成自成一棵树（`index` 连续、`depth` 以子树根为 0、`parentIndex` 重映射），`childCount` 仍是**整树口径**不因裁剪归零。
+
+### Changed
+
+- **组件树投影字段去缩写**：树文本与节点投影里的 `pad:` / `bw:` / `br:` / `bc:` 一律改为完整名 `padding:` / `borderWidth:` / `borderRadius:` / `borderColor:`——缩写里的 `bc:` 极易被误读成 background color（实际是 borderColor），宁可多几个字符也不要歧义。
+- **背景色进入节点投影**：`backgroundColor` 由「只在原始属性里躺着」提升为 canonical 节点的正式字段（沿用「有值才挂 key」约定），树文本里也会显示。
+
+### Validation
+
+- 单元测试通过（`npm run check` + `npm test`）；新增组件树 id 定位 / 子树裁剪 / 祖先链 / 投影字段的回归用例，以及两个 UI 工具的**严格 output schema 自校验**（`additionalProperties:false` 下逐键比对，防止未声明字段让工具运行时整体失败）。
+
 ## [0.9.1] - 2026-11-18
 
 ### Fixed
