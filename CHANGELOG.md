@@ -2,7 +2,11 @@
 
 本项目的重要变更记录在此文件中。发布工作流按 `v*` 标签提取对应版本段落作为 GitHub Release 正文；版本标题格式为 `## [X.Y.Z] - YYYY-MM-DD`。
 
-## [Unreleased]
+## [0.10.1] - 2026-11-24
+
+### Fixed
+
+- **`harmony_ui_node` / `harmony_ui_tree(include_attrs)` 的属性清单与 ArkUI Inspector 属性面板逐条一致** —— 此前工具只回 `rawAttrs`（设备上报的原始键），比 Inspector 属性面板少几个键（例如 DevEco 源派生出的 `componentOrBuilderName` / `isCustom` / `type`）。现在属性清单按 Inspector 的同一规则合并（`rawAttrs ∪ attrs`，冲突时以 `rawAttrs` 为准），**面板里有的属性，工具里一样有**——不必再把 agent 支去点 GUI。节点渲染文案由「原始属性」改为「全部属性」，工具描述也写明：结果里没有的属性＝设备没上报。
 
 ## [0.10.0] - 2026-11-24
 

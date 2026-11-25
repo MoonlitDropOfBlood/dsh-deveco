@@ -29,8 +29,8 @@
 
 ### Agent 工具（对话内可调用）
 - **`harmony_project`**：只读解析真实 DevEco/Hvigor 工程（JSON5），从工程内任意路径向上定位应用根，返回 bundle/版本、products/build modes、模块/targets、Ability/ExtensionAbility、权限、页面、依赖、HAP/HSP/HAR/APP 构建产物及 Source Map 清单。省略 `path` 时使用当前 agent 工作区；签名配置只返回名称/类型/完整性，不暴露证书路径、别名或密码。
-- **`harmony_ui_tree`**：把 DevEco 调试源取树注册为 DSH 的 agent 工具（`ctx.tools`），对话里的 agent 可直接调用，返回**缩进树文本**（或 `format=json` 完整节点）——节点含组件名、bounds、文本与 **padding/margin/border/background 声明值**（投影字段用完整名，不用 `pad:`/`bw:`/`br:`/`bc:` 缩写）；JSON 中每个节点带裁剪前原始直接子节点数 `childCount`（裁剪为叶子也不归零）。Swiper 在 `displayCount` 未配置或 ≤1 时只完整展开 `currentIndex` 页，其他页保留一层（`TabContent` 两层），`displayCount>1` 时不裁剪。支持 `device` / `pid` / `package_name` 定位目标、`include_attrs` 附带全部原始属性、`max_nodes` 截断保护、**`root_id` 只取某个节点的子树**（id 用设备 accessibilityId（`#123`，`#` 可省）或开发者 `.id()`）。前置条件同 DevEco 调试源（debug 应用、DevEco Inspector 面板未占用）。
-- **`harmony_ui_node`**：**按唯一 id 取单个组件的全部属性**——省 token 的替代路径。只需一个 id（设备 accessibilityId 或开发者 `.id()`），返回该节点的 canonical 信息 + **设备全部原始属性**（字号、字色、尺寸、状态等设备上报的一切）+ 根→父的祖先路径；token 消耗与整棵树规模无关，不必为了看一个组件而拉回几百个节点。id 命中多个时列出候选，命中不到时列出当前可用 id。
+- **`harmony_ui_tree`**：把 DevEco 调试源取树注册为 DSH 的 agent 工具（`ctx.tools`），对话里的 agent 可直接调用，返回**缩进树文本**（或 `format=json` 完整节点）——节点含组件名、bounds、文本与 **padding/margin/border/background 声明值**（投影字段用完整名，不用 `pad:`/`bw:`/`br:`/`bc:` 缩写）；JSON 中每个节点带裁剪前原始直接子节点数 `childCount`（裁剪为叶子也不归零）。Swiper 在 `displayCount` 未配置或 ≤1 时只完整展开 `currentIndex` 页，其他页保留一层（`TabContent` 两层），`displayCount>1` 时不裁剪。支持 `device` / `pid` / `package_name` 定位目标、`include_attrs` 附带该节点的**全部设备属性**（与 Inspector 属性面板同规则）、`max_nodes` 截断保护、**`root_id` 只取某个节点的子树**（id 用设备 accessibilityId（`#123`，`#` 可省）或开发者 `.id()`）。前置条件同 DevEco 调试源（debug 应用、DevEco Inspector 面板未占用）。
+- **`harmony_ui_node`**：**按唯一 id 取单个组件的全部属性**——省 token 的替代路径。只需一个 id（设备 accessibilityId 或开发者 `.id()`），返回该节点的 canonical 信息 + **该节点的全部设备属性**（`attrs`，与 ArkUI Inspector 属性面板**逐条同规则**：字号、字色、尺寸、状态等设备上报的一切，以及解析层派生的其余键）+ 根→父的祖先路径；token 消耗与整棵树规模无关，不必为了看一个组件而拉回几百个节点。**面板里有的属性，这里一样有**——不必让 agent 改让人去点 GUI；结果里没有的属性即设备未上报。id 命中多个时列出候选，命中不到时列出当前可用 id。
 - **`harmony_web_dom`**：读取 **ArkWeb（HarmonyOS Web 组件）页面的真实 DOM**，走 ArkWeb 自带的 Chromium DevTools Protocol，不依赖 uitest/ArkUI Inspector/Chrome 中间页。
   - `action="targets"` 枚举 `webview_devtools_remote_<pid>` 进程与可调试页面（id / type / title / url / pid / 包名）。
   - `action="snapshot"` 读取指定 target 的 DOM；支持 CSS `selector` 定位子树、`depth` / `max_nodes` 有界裁剪、`include_attrs` 返回全部属性、`include_html` / `format="html"` 返回 outerHTML。
@@ -128,7 +128,7 @@ dsh plugin --profile web add .
 
 ```bash
 npm run check    # 全部 JS 语法检查
-npm test         # 203 个独立核心单元测试（含 JSON5 工程模型/签名脱敏 + Source Map VLQ 双向映射 + 源码断点工具执行 + 源码暂停通知 + ArkUI 树投影与 UI 工具严格 schema）
+npm test         # 205 个独立核心单元测试（含 JSON5 工程模型/签名脱敏 + Source Map VLQ 双向映射 + 源码断点工具执行 + 源码暂停通知 + ArkUI 树投影、属性合并口径与 UI 工具严格 schema）
 
 # 真实 Hvigor 工程 Source Map 双向映射探针（不依赖设备/DSH）
 node scripts/e2e-source-map.mjs --project <工程根> --source entry/src/main/ets/pages/Index.ets --line 296

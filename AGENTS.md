@@ -34,7 +34,7 @@ dsh-deveco/
 ├── harmony-agent-tools.mjs   # agent 工具定义（harmony_project / harmony_debug / harmony_web_dom），执行经 host 端口注入
 ├── harmony-ui-tools.mjs      # 零依赖：agent 工具定义（harmony_ui_tree / harmony_ui_node），执行经 host.fetchDevEcoTree 端口注入；工具 spec 单独成模块以便 self-test 覆盖严格 output schema
 ├── cordis.patch.yml          # dsh bundle patch（挂载行）
-├── scripts/self-test.mjs     # 203 个独立核心单元测试（含工程模型、Source Map、源码断点/通知、Web DOM/CDP、git/保存、ArkUI 树投影与两个 UI 工具的严格 schema 自校验）
+├── scripts/self-test.mjs     # 205 个独立核心单元测试（含工程模型、Source Map、源码断点/通知、Web DOM/CDP、git/保存、ArkUI 树投影、属性合并口径与两个 UI 工具的严格 schema 自校验）
 ├── scripts/e2e-agent-tools.mjs  # 模拟器跑 agent 工程/调试工具的端到端探针（不依赖 DSH）
 ├── scripts/e2e-source-map.mjs   # 真实 Hvigor 工程 Source Map 双向映射探针（不依赖设备/DSH）
 ├── scripts/e2e-breakpoint-notify.mjs  # 断点通知链路端到端探针（假 ArkVM 服务端，不依赖设备/DSH）
@@ -188,7 +188,7 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 
 **`harmony_ui_tree`** —— DevEco 调试源取树，注册进 DSH 的 `ctx.tools`（`@deepseek-ai/dsh-tools` 的 `defineTool`），agent 可直接调用：
 
-- **参数**：`device`（序列号，省略用默认目标）、`pid` / `package_name`（省略取前台窗口应用）、`format`（`tree` 缩进树文本＝默认 / `json` 完整节点 JSON）、`include_attrs`（附带全部原始属性，占篇幅，默认关）、`max_nodes`（默认 400、上限 4000）、`root_id`（**只取子树**：以该节点为根返回局部组件树，id ＝ 设备 accessibilityId（UI 树里的 `#123`，`#` 可省）或开发者 `.id()`）。截断**整棵子树省略，绝不发半棵**：被省略节点的最近保留祖先带 `childrenOmitted: true` + `hiddenDirect`（省略的直接子节点数），每个节点带 `childCount`（原始未裁剪树口径的直接子节点总数，Swiper/不可见/max_nodes 裁剪后均保持原值）——前端/agent 由此知道内部还有多少孩子；结构性裁剪也通过 `childrenOmitted`/`hiddenDirect` 标记，不得把被裁成叶子的节点误报成 `childCount:0`。
+- **参数**：`device`（序列号，省略用默认目标）、`pid` / `package_name`（省略取前台窗口应用）、`format`（`tree` 缩进树文本＝默认 / `json` 完整节点 JSON）、`include_attrs`（附带该节点的**全部设备属性**，口径与 Inspector 属性面板同规则，占篇幅，默认关）、`max_nodes`（默认 400、上限 4000）、`root_id`（**只取子树**：以该节点为根返回局部组件树，id ＝ 设备 accessibilityId（UI 树里的 `#123`，`#` 可省）或开发者 `.id()`）。截断**整棵子树省略，绝不发半棵**：被省略节点的最近保留祖先带 `childrenOmitted: true` + `hiddenDirect`（省略的直接子节点数），每个节点带 `childCount`（原始未裁剪树口径的直接子节点总数，Swiper/不可见/max_nodes 裁剪后均保持原值）——前端/agent 由此知道内部还有多少孩子；结构性裁剪也通过 `childrenOmitted`/`hiddenDirect` 标记，不得把被裁成叶子的节点误报成 `childCount:0`。
 - **id 解析（`root_id` 与 `harmony_ui_node` 共用）**：`findDevEcoNodeById` 按 **`accessibilityId` → `devId` → `componentName`** 优先级精确匹配（`#` 前缀可省）；同一层命中多个 → `ambiguous`（返回候选清单让 agent 改用 accessibilityId），一个不中 → `not-found`（错误消息附当前树前几个可用 id）。**accessibilityId 是设备分配的全树唯一 id**，devId（开发者 `.id()`）可能重复，所以对外一律以 accessibilityId 为准。
 - **子树裁剪（`root_id`）**：`devEcoSubtreeNodes` 取命中节点起的**连续 DFS 区间**（到下一个 `depth <= 根.depth` 的节点为止），并重编号成自成一棵树：`index` 0..n-1 连续、`depth` 相对子树根、`parentIndex` 重映射（根为 -1）；`childCount` / `childrenOmitted` / `hiddenDirect` 原样保留（子树根的 `childCount` 仍是**整树口径**，不因裁剪归零）。
 - **Swiper 裁剪（Inspector 与 agent 共用 `parseDevEcoTree`）**：`displayCount` 未配置按 1；未配置或 ≤1 时，仅 `currentIndex` 对应的直接子页面完整保留，非当前页若是 `TabContent` 最多保留两层（页根 + 直接子节点），其他类型只保留页根一层；`displayCount>1` 完全不做这套 Swiper 裁剪。不可见存根规则与 `max_nodes` 截断仍照常生效。
@@ -201,7 +201,8 @@ Host 方法一律返回 `{ ok: true, value }` 或 `{ ok: false, error: { code, m
 **`harmony_ui_node`** —— 按唯一 id 取**单个组件的全部属性**（省 token 的替代路径），与 `harmony_ui_tree` 同源同前置条件：
 
 - **参数**：`id`（**必填**，设备 accessibilityId 如 `123` / `#123`，或开发者 `.id()`）、可选 `device` / `pid` / `package_name`（与 `harmony_ui_tree` 同）。
-- **输出**：`{ source:"deveco", pid, packageName, matchedBy, id, node, path }`——`node` 是 canonical 节点**且带 `attrs`＝设备全部原始属性**（字号、字色、尺寸、状态等设备上报的一切），`path` 是根→父的祖先链（`{index,name,className,accessibilityId,devId}`），`matchedBy` 说明是按 `accessibilityId` / `devId` / `componentName` 哪一层命中的。
+- **输出**：`{ source:"deveco", pid, packageName, matchedBy, id, node, path }`——`node` 是 canonical 节点**且带 `attrs`＝该节点的全部设备属性**（`rawAttrs ∪ attrs`，与 ArkUI Inspector 属性面板**逐条同规则**：字号、字色、尺寸、状态等设备上报的一切，外加解析层派生的 `componentOrBuilderName` / `isCustom` / `type`），`path` 是根→父的祖先链（`{index,name,className,accessibilityId,devId}`），`matchedBy` 说明是按 `accessibilityId` / `devId` / `componentName` 哪一层命中的。
+- **属性口径必须是「面板里有的，工具里一样有」**：工具的价值正是**不把人支去点 GUI**——同一个节点，Inspector 属性面板能看到什么，工具就必须回什么（合并规则见 `devEcoMergedAttrs`）。工具描述里写死这句：**结果里没有的属性＝设备没上报**，不要改口说「得去点 Inspector」。
 - **为什么要它**：`harmony_ui_tree` 一次返回整棵树（几百节点）才能定位一个组件；本工具只回**那一个节点**的全量属性 ＋ 祖先路径，token 消耗与树规模无关。
 - **`childCount` 必须补**：`devEcoNodeSummary` 不产 `childCount`，而 canonical 节点 schema 要求它必填——工具层取 parse 节点的 `childCount` 补上（子树根的 `childCount` 是**整树口径**，不因取子树归零）。
 - **失败消息必须可操作**：`ambiguous`（同 id 多命中）→ 列候选（`#accessibilityId name`）；`not-found` → 列当前树前几个可用 id，并提示 id 来自 `harmony_ui_tree` / `harmony_ui_node`。
@@ -306,12 +307,13 @@ Host 经 `buildHarmonyAgentTools` 注册 `harmony_project`、`harmony_debug` 与
 - **窗口下拉必须能降级**：客户端只有在 `windowId` 有值时才渲染树；若 `uiWindowList` 失败则 `windowId=""`，即使 `uiDump` 成功树也是空的——`hidumper` 兜底因此是 Inspector 可用性的必要条件，不能省。
 - **`_capabilities()` / `resolved.cliAvailable` / `resolved.hdcAvailable`** 会随 `getConfig` 返回：客户端徽章显示「hdc 降级（未安装 devecocli）」，设备列表失败时把错误显示在 Tab 里（不再静默空下拉）。
 - **所有新增 hdc 命令构造/解析放 `harmony-device.mjs` 纯函数**（`buildHdc*` / `parseHdcTargets` / `parseWindowManagerDump`），`index.js` 只做选择与执行；新增能力必须同时补 `scripts/self-test.mjs` 的命令串断言。
+- **字体属性通道：只有 uitest 的 `dumpLayout -a`，而当前 live dump 从不请求它**（2026-11-24 核实）：`buildUiRawDumpArgs` 只传 `-i`（保持窗口分离），**不传 `-a`**；`-a` 才是「加字体」的开关（字体落在兄弟节点 `extraAttrs:{extra:{Content,FontSize,FontColor,BackgroundColor}}`，解析层 `parseUiRawDump` 已会把它折进 `rawAttrs`）。但 AGENTS.md 记着 `-a` 与 `-i` **互斥**，所以想要字体就得放弃窗口分离，或另跑一次 `-a` dump 再按节点 id 合并。**DevEco 调试源是否上报字体属性未经真机验证**（无设备可验）——`harmony_ui_node` 拿不到 `fontSize` 时，结论只能是「设备/DevEco 源没报」，不要改口说「得去点 GUI」。
 
 ## 开发 / 验证
 
 ```bash
 npm run check              # 全部 JS 语法检查（含工程模型/Source Map/git 模块/e2e 模块）
-npm test                   # 203 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP、git 解析与保存、ArkUI 树投影与 UI 工具严格 schema）
+npm test                   # 205 个单元测试（含 JSON5 工程模型、签名脱敏、VLQ、双向映射、过期保护、源码断点与通知、Web DOM/CDP、git 解析与保存、ArkUI 树投影、属性合并口径与 UI 工具严格 schema）
 node scripts/e2e-source-map.mjs --project <root> --source entry/src/main/ets/pages/Index.ets --line 296  # 真实 Hvigor Source Map 双向验证（不依赖设备/DSH）
 node scripts/e2e-agent-tools.mjs --device 127.0.0.1:5555 --bundle <pkg> --project <root> --source entry/src/main/ets/pages/Index.ets --source-line 296 --attach   # 模拟器跑工程 + 源码断点工具（不依赖 DSH）
 npm run e2e:notify             # 断点通知链路端到端（**不依赖设备**：假 ArkVM 服务端 + 真会话 + 真工具 + 真 Host 投递）

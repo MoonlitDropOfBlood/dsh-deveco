@@ -1403,6 +1403,36 @@ export function decodeWsServerFrames (buffer) {
 // ---- Agent 工具面：DevEco 调试树的模型友好投影（纯函数，供 harmony_ui_tree 工具用） ----
 
 /**
+ * 节点的**全部**设备属性 —— 与 ArkUI Inspector「设备原始属性」面板**逐条同规则**。
+ *
+ * Inspector 的属性面板（client.js）是这样列的：先列 `rawAttrs`（设备上报的原始
+ * 键值，一个不漏），再把 `attrs` 里**尚未出现**的键补进来（按 key 去重）。所以
+ * 「Inspector 能看到的属性」＝`rawAttrs ∪ attrs`，而不是只有 rawAttrs。
+ *
+ * 之前 agent 工具只回 `rawAttrs`，比 GUI 少几个键（例如 DevEco 源派生出的
+ * `componentOrBuilderName` / `isCustom` / `type`）——同一个节点，GUI 看到的比
+ * 工具多，这不该发生：工具的价值正是「不把人支去点 GUI」。
+ *
+ * 冲突时以 `rawAttrs` 为准（原始上报优先于派生值），与 Inspector 完全一致。
+ *
+ * @param {object} n parseDevEcoTree / parseUiRawDump 输出节点
+ * @returns {Object<string, string>} 合并后的属性表（值均为字符串）
+ */
+export function devEcoMergedAttrs (n) {
+  const out = {}
+  if (!n || typeof n !== 'object') return out
+  const raw = (n.rawAttrs && typeof n.rawAttrs === 'object') ? n.rawAttrs : null
+  const extra = (n.attrs && typeof n.attrs === 'object') ? n.attrs : null
+  if (raw) for (const [k, v] of Object.entries(raw)) out[k] = v
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (!Object.hasOwn(out, k)) out[k] = v
+    }
+  }
+  return out
+}
+
+/**
  * 把 `parseDevEcoTree` 节点收缩成 agent 工具的紧凑节点（canonical JSON）。
  * 展示名沿用 UI 的标签规则：组件名 → 开发者 id → 真实类型。
  * @param {object} n parseDevEcoTree 输出节点
@@ -1446,7 +1476,8 @@ export function devEcoNodeSummary (n, includeAttrs = false) {
   // 背景色也是声明值：与盒模型一样有值才挂 key（此前只在原始 attrs 里躺着，
   // agent 看不到，就无法把「边框色」误读成「背景色」或反过来）。
   if (n.backgroundColor) out.backgroundColor = toStr(n.backgroundColor)
-  if (includeAttrs && n.rawAttrs && typeof n.rawAttrs === 'object') out.attrs = n.rawAttrs
+  // 「全部属性」＝与 Inspector 属性面板同规则（rawAttrs ∪ attrs），不是只回 rawAttrs。
+  if (includeAttrs) out.attrs = devEcoMergedAttrs(n)
   return out
 }
 

@@ -13,7 +13,7 @@ import {
   parseDeviceList, extractJsonArray,
   buildArkForwardArgs, buildLocalAbstractForwardArgs, buildForwardRemoveArgs, DEV_ECO_WS_MESSAGES, findDevEcoTreeRoot, parseDevEcoTree,
   buildDevEcoWsHandshake, isWsHandshakeAccepted, encodeWsClientTextFrame, encodeWsPongFrame, decodeWsServerFrames,
-  devEcoNodeSummary, devEcoTreeLines, devEcoToolNodes,
+  devEcoNodeSummary, devEcoMergedAttrs, devEcoTreeLines, devEcoToolNodes,
   findDevEcoNodeById, devEcoSubtreeNodes, devEcoAncestorChain,
   buildUiRawDumpArgs, buildUiRawRecvArgs, buildUiRawCleanArgs,
   buildHdcConnectArgs, buildHdcDisconnectArgs, parseTconnResult, parseProcessPids, resolveHdc,
@@ -1048,6 +1048,49 @@ test('devEcoNodeSummary trims nodes for the agent tool (label rule + box model �
   const withAttrs = devEcoNodeSummary(nodes[0], true)
   assert.equal(typeof withAttrs.attrs, 'object')
   assert.equal(withAttrs.attrs.id, 'mainNav')
+})
+
+test('devEcoMergedAttrs returns exactly what the Inspector properties pane lists', () => {
+  // Inspector 的属性面板（client.js）：先列 rawAttrs，再把 attrs 里尚未出现的键
+  // 补进来（按 key 去重）。agent 工具必须与它**逐条一致**——同一个节点，GUI
+  // 能看到的属性，工具里不能少，否则就得把人支去点 GUI。
+  const merged = devEcoMergedAttrs({
+    rawAttrs: { id: 'mainNav', enabled: 'true', fontSize: '16' },
+    attrs: { id: 'mainNav', enabled: 'false', isCustom: 'true', type: 'build-in' },
+  })
+  // rawAttrs 全在
+  assert.equal(merged.id, 'mainNav')
+  assert.equal(merged.fontSize, '16')
+  // 冲突时 rawAttrs 优先（原始上报 > 派生值）——与 Inspector 同规则
+  assert.equal(merged.enabled, 'true')
+  // attrs 里 rawAttrs 没有的键被补进来
+  assert.equal(merged.isCustom, 'true')
+  assert.equal(merged.type, 'build-in')
+  // 空/异常输入不抛
+  assert.deepEqual(devEcoMergedAttrs(null), {})
+  assert.deepEqual(devEcoMergedAttrs({}), {})
+  assert.deepEqual(devEcoMergedAttrs({ rawAttrs: null, attrs: null }), {})
+})
+
+test('devEcoNodeSummary include_attrs carries the merged attribute set, not rawAttrs alone', () => {
+  // 用户诉求：harmony_ui_node 要「按原有工具返回全部属性」——即与 Inspector
+  // 属性面板同一份清单，而不是只回 rawAttrs。
+  const node = {
+    index: 0, depth: 0, parentIndex: -1, className: 'Column', componentName: '',
+    devId: 'mainNav', accessibilityId: '10', text: '', visible: true,
+    enabled: true, clickable: false, scrollable: false, bounds: {},
+    rawAttrs: { id: 'mainNav', fontSize: '16' },
+    attrs: { id: 'mainNav', fontSize: '16', isCustom: 'true', componentOrBuilderName: 'MyRow' },
+  }
+  const s = devEcoNodeSummary(node, true)
+  // rawAttrs 里的
+  assert.equal(s.attrs.id, 'mainNav')
+  assert.equal(s.attrs.fontSize, '16')
+  // attrs 独有的（rawAttrs 没有的）也在
+  assert.equal(s.attrs.isCustom, 'true')
+  assert.equal(s.attrs.componentOrBuilderName, 'MyRow')
+  // 默认不带 attrs
+  assert.equal('attrs' in devEcoNodeSummary(node), false)
 })
 
 test('devEcoTreeLines renders one indented line per node', () => {
@@ -3898,6 +3941,10 @@ test('harmony_ui_tree with include_attrs and max_nodes still matches the strict 
   const withAttrs = await tree.execute({ include_attrs: true })
   assertToolOutputMatchesSchema(tree.output.schema, withAttrs, 'harmony_ui_tree(include_attrs)')
   assert.equal(withAttrs.nodes[0].attrs.id, 'pageRoot')
+  // include_attrs 也是与 Inspector 同规则的完整清单：rawAttrs ∪ attrs
+  assert.equal(withAttrs.nodes[0].attrs.componentOrBuilderName, 'PageRoot')
+  assert.equal(withAttrs.nodes[0].attrs.isCustom, 'true')
+  assert.equal(withAttrs.nodes[0].attrs.type, 'custom')
   // 整棵子树省略式截断：只发整节点，不发半棵
   const truncated = await tree.execute({ max_nodes: 1 })
   assertToolOutputMatchesSchema(tree.output.schema, truncated, 'harmony_ui_tree(max_nodes)')
@@ -3967,7 +4014,7 @@ test('harmony_ui_node returns one node with every raw attribute and its ancestor
   assert.equal(value.matchedBy, 'accessibilityId')
   assert.equal(typeof value.id, 'string')
   assert.equal(value.id, '12')
-  // node 是 canonical 节点 + 设备全部原始属性（attrs）
+  // node 是 canonical 节点 + 该节点的**全部**设备属性（attrs）
   assert.equal(value.node.accessibilityId, '12')
   assert.equal(value.node.name, 'leaf')
   assert.equal(value.node.className, 'Text')
@@ -3975,6 +4022,10 @@ test('harmony_ui_node returns one node with every raw attribute and its ancestor
   assert.equal(typeof value.node.childCount, 'number')
   assert.equal(value.node.childCount, 0)
   assert.equal(value.node.attrs.id, 'leaf')
+  // attrs 是与 Inspector 属性面板同一份清单（rawAttrs ∪ attrs）：rawAttrs 独有的
+  // 键在，`attrs` 独有的键（这里是 parse 层派生的 type）也要在——只回 rawAttrs
+  // 会比 GUI 少几个键，agent 就得反过来让人去点 GUI。
+  assert.equal(value.node.attrs.type, 'build-in')
   // path 是根→父的祖先链
   assert.equal(value.path.length, 2)
   assert.deepEqual(value.path.map((p) => p.accessibilityId), ['10', '11'])
@@ -4028,11 +4079,13 @@ test('the ArkUI tools render text output without throwing', async () => {
   const jsonChunks = tree.output.render({ format: 'json' }, treeValue)
   assert.equal(jsonChunks[0].type, 'text')
   assert.equal(JSON.parse(jsonChunks[0].text).source, 'deveco')
-  // node 的 render 是紧凑文本：概要行 + 路径行 + 逐条原始属性
+  // node 的 render 是紧凑文本：概要行 + 路径行 + 逐条**全部**属性
   const text = node.output.render({ id: '12' }, nodeValue)[0].text
   assert.ok(text.includes('路径：'))
-  assert.ok(text.includes('原始属性'))
+  assert.ok(text.includes('全部属性'))
   assert.ok(text.includes('id=leaf'))
+  // 合并后的清单也要出现在文本里（attrs 独有的键）
+  assert.ok(text.includes('type=build-in'))
 })
 
 test('harmony_ui_node requires an id parameter and takes no tree-only parameters', () => {

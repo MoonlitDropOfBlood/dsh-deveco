@@ -82,7 +82,7 @@ const nodeSchema = {
     borderRadius: { type: 'number' },
     borderColor: { type: 'string' },
     backgroundColor: { type: 'string', description: '背景色声明值（有值才出现）' },
-    attrs: { type: 'json', description: 'include_attrs 时附带的全部原始属性' },
+    attrs: { type: 'json', description: '该节点的全部设备属性（与 Inspector 属性面板同规则：rawAttrs ∪ attrs）' },
   },
 }
 
@@ -210,9 +210,12 @@ export function buildHarmonyUiTreeTool (defineTool, host) {
 
 /**
  * Agent 工具面：`harmony_ui_node` —— 按唯一 id 取**单个组件的全部属性**
- * （省 token 的替代路径）：只回那一个节点的 canonical 投影 ＋ 设备全量原始属性
- * ＋ 根→父的祖先链，而不是整棵树。与 `harmony_ui_tree` 同源同前置条件
+ * （省 token 的替代路径）：只回那一个节点的 canonical 投影 ＋ 该节点的**全部**
+ * 设备属性 ＋ 根→父的祖先链，而不是整棵树。与 `harmony_ui_tree` 同源同前置条件
  * （复用 host 端口的 `fetchDevEcoTree`）。
+ *
+ * 「全部属性」的口径与 ArkUI Inspector 的属性面板**逐条一致**（`rawAttrs ∪ attrs`），
+ * 所以 agent 不需要把人支去点 GUI：面板里有的属性，这里一样有。
  *
  * @param {Function} defineTool dsh-tools 的 defineTool（运行期动态导入）
  * @param {{ fetchDevEcoTree: Function }} host host 端口（取树由 Host 编排）
@@ -220,7 +223,7 @@ export function buildHarmonyUiTreeTool (defineTool, host) {
 export function buildHarmonyUiNodeTool (defineTool, host) {
   return defineTool({
     name: 'harmony_ui_node',
-    description: "Fetch ONE component's full attribute set by id — a token-frugal alternative to harmony_ui_tree: returns that node's every raw device attribute (font size, colours, sizes, states) plus its ancestor path, instead of the whole tree. Requires a debuggable app; the app-side inspector socket is single-client, so close DevEco Studio's ArkUI Inspector panel first if it is open (the error message lists all prerequisites). By default targets the foreground window's app.",
+    description: "Fetch ONE component's full attribute set by id — a token-frugal alternative to harmony_ui_tree: returns that node's EVERY attribute the device reported (font size, colours, sizes, states, and every other key), using exactly the same rule as the ArkUI Inspector's properties pane, plus its ancestor path, instead of the whole tree. Use this instead of asking the user to inspect the GUI: if a property is not in the result, the device did not report it for that node. Requires a debuggable app; the app-side inspector socket is single-client, so close DevEco Studio's ArkUI Inspector panel first if it is open (the error message lists all prerequisites). By default targets the foreground window's app.",
     parameters: {
       id: { type: 'string', required: true, description: "Device accessibility id of the node (e.g. 123 or #123, '#' optional) or a developer .id() value." },
       device: { type: 'string', description: 'Device/emulator serial as listed by hdc targets (e.g. 127.0.0.1:5555). Omit for the default target.' },
@@ -237,7 +240,7 @@ export function buildHarmonyUiNodeTool (defineTool, host) {
           packageName: { type: 'string', required: true },
           matchedBy: { type: 'string', enum: ['accessibilityId', 'devId', 'componentName'], required: true, description: '按哪一层命中的' },
           id: { type: 'string', required: true, description: '命中的节点 id' },
-          node: { ...nodeSchema, required: true, description: '命中节点的 canonical 投影（带全部原始属性 attrs）' },
+          node: { ...nodeSchema, required: true, description: '命中节点的 canonical 投影（attrs ＝该节点的全部设备属性，与 Inspector 属性面板同规则）' },
           path: {
             type: 'array',
             required: true,
@@ -270,8 +273,8 @@ export function buildHarmonyUiNodeTool (defineTool, host) {
         const attrs = (n.attrs && typeof n.attrs === 'object') ? n.attrs : {}
         const attrLines = Object.keys(attrs).sort().map((k) => `${k}=${attrs[k]}`)
         const body = attrLines.length
-          ? [`原始属性（${attrLines.length} 项）：`, ...attrLines]
-          : ['原始属性：（无）']
+          ? [`全部属性（${attrLines.length} 项）：`, ...attrLines]
+          : ['全部属性：（设备未上报任何属性）']
         return [{ type: 'text', text: [head, pathLine, ...body].join('\n') }]
       },
     },
